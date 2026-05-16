@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-from typing import List, Optional
 import argparse
 import json
 import signal
 import subprocess
 import sys
+from pathlib import Path
+from typing import List, Optional
 
 from codex_lark_minimal.codex import (
     build_continue_prompt,

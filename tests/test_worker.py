@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from pathlib import Path
 import os
 import stat
 import subprocess
 import sys
 import tempfile
 import unittest
+from pathlib import Path
 
 from codex_lark_minimal.config import load_config
 from codex_lark_minimal.state import JobRecord, StateStore

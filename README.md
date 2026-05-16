@@ -1,5 +1,8 @@
 # codex-lark-minimal
 
+[![test](https://github.com/xllakers/codex-lark-minimal/actions/workflows/test.yml/badge.svg)](https://github.com/xllakers/codex-lark-minimal/actions/workflows/test.yml)
+[![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 A minimal, local-first Feishu/Lark bridge that lets a chat bot start, track,
 stop, and resume [Codex](https://github.com/openai/codex) jobs on your machine.
 
@@ -210,9 +213,23 @@ tail (see `src/codex_lark_minimal/redaction.py`).
 
 ## Development
 
+Install with dev tools, then run the same three checks CI runs:
+
 ```bash
-make test                                              # run unit tests
-PYTHONPATH=src python -m codex_lark_minimal.cli ...    # run from a checkout
+pip install -e ".[dev]"
+
+ruff check src/ tests/    # lint
+mypy                      # type check (lenient — strict is a separate effort)
+pytest -q                 # 26 tests, <1s
+```
+
+`make test` runs pytest only. CI (GitHub Actions, `.github/workflows/test.yml`)
+runs all three on Python 3.9 and 3.12 for every push and PR.
+
+Run the CLI from a checkout without installing:
+
+```bash
+PYTHONPATH=src python -m codex_lark_minimal.cli ...
 ```
 
 Repo guardrails for AI agents live in `AGENTS.md` (read automatically by

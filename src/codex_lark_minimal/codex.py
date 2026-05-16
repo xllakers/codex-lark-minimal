@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
 import json
 import re
 import shlex
+from pathlib import Path
+from typing import Any, Dict, Iterable, List, Optional
 
 from codex_lark_minimal.config import Config
 from codex_lark_minimal.redaction import redact
@@ -55,7 +55,16 @@ def command_preview(command: Iterable[str]) -> str:
     return " ".join(shlex.quote(part) for part in command)
 
 
-def build_start_prompt(workspace: Path, run_id: str, task_text: str, *, event_id: str = "", message_id: str = "") -> str:
+def build_start_prompt(
+    workspace: Path,
+    run_id: str,
+    task_text: str,
+    *,
+    event_id: str = "",
+    message_id: str = "",
+) -> str:
+    # The prompt template is sent verbatim to Codex; keeping each instruction on
+    # one line matters for the agent reading it, so don't wrap the long lines.
     return """You were started from a Feishu/Lark bot message.
 
 Work in this workspace: {workspace}

@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from pathlib import Path
 import tempfile
 import threading
 import unittest
+from pathlib import Path
 
 from codex_lark_minimal.config import Config
 from codex_lark_minimal.state import JobRecord, StateStore

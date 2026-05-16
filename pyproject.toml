@@ -12,8 +12,44 @@ dependencies = [
   "lark-oapi>=1.6.5",
 ]
 
+[project.optional-dependencies]
+dev = [
+  "pytest>=7",
+  "ruff>=0.11",
+  "mypy>=1.10",
+]
+
 [project.scripts]
 codex-lark = "codex_lark_minimal.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py39"
+
+[tool.ruff.lint]
+# Core errors + pyflakes + warnings + import order + bugbear + comprehensions.
+# Style upgrades (UP) and rewrites (SIM) are deferred — the codebase deliberately
+# uses %-formatting and explicit constructs.
+select = ["E", "F", "W", "I", "B", "C4"]
+
+[tool.ruff.lint.per-file-ignores]
+# The Codex prompt template is sent verbatim to the agent; line length there
+# affects what Codex reads, not what we read.
+"src/codex_lark_minimal/codex.py" = ["E501"]
+
+[tool.mypy]
+python_version = "3.9"
+files = ["src"]
+ignore_missing_imports = true
+# Strict mode is a separate effort. For now we just want imports + obvious
+# errors caught in CI.
+warn_unused_configs = true
+warn_redundant_casts = true
+warn_unused_ignores = true

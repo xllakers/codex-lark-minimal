@@ -2,16 +2,16 @@
 
 from __future__ import annotations
 
-from contextlib import contextmanager
-from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
-from pathlib import Path
-from typing import Any, Dict, Iterable, Iterator, List, Optional
 import fcntl
 import json
 import os
 import signal
 import uuid
+from contextlib import contextmanager
+from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Dict, Iterable, Iterator, List, Optional
 
 from codex_lark_minimal.config import Config, ensure_dirs
 
@@ -52,7 +52,7 @@ class JobRecord:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "JobRecord":
-        known = {field.name for field in cls.__dataclass_fields__.values()}  # type: ignore[attr-defined]
+        known = {field.name for field in cls.__dataclass_fields__.values()}
         return cls(**{key: value for key, value in data.items() if key in known})
 
     @property

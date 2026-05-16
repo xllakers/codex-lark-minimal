@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import unittest
 
-from codex_lark_minimal.codex import extract_session_id, event_tail_text
+from codex_lark_minimal.codex import event_tail_text, extract_session_id
 
 
 class CodexParsingTests(unittest.TestCase):

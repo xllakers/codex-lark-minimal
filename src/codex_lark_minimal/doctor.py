@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from typing import List, Tuple
 import json
 import shutil
 import subprocess
 import sys
 import urllib.error
 import urllib.request
+from typing import List, Tuple
 
 from codex_lark_minimal.config import Config, config_permissions, validate_config
 from codex_lark_minimal.redaction import mask_secret, redact
@@ -50,7 +50,10 @@ def run_doctor(config: Config) -> Tuple[bool, str]:
     if config.allowed_senders or config.allowed_chats:
         checks.append((True, "allowlist configured"))
     else:
-        checks.append((config.dry_run and config.allow_all, "allowlist missing (OK only with dry-run allow-all discovery)"))
+        checks.append((
+            config.dry_run and config.allow_all,
+            "allowlist missing (OK only with dry-run allow-all discovery)",
+        ))
 
     active = store.active_jobs()
     checks.append((True, "active bridge jobs: %s" % len(active)))

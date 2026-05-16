@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from pathlib import Path
-from typing import Optional
 import hashlib
 import subprocess
 import sys
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Optional
 
 from codex_lark_minimal.codex import format_recent_sessions
 from codex_lark_minimal.commands import ParsedCommand, help_text, parse_message
@@ -90,7 +90,13 @@ class BridgeController:
         if len(active) >= self.config.max_running:
             return "Busy: %s job(s) already running.\n%s" % (len(active), summarize_jobs(active))
 
-        record = self.make_record(command.workspace_alias, workspace, command.task_text, meta, status="dry_run" if self.config.dry_run else "starting")
+        record = self.make_record(
+            command.workspace_alias,
+            workspace,
+            command.task_text,
+            meta,
+            status="dry_run" if self.config.dry_run else "starting",
+        )
         self.store.write(record)
         if self.config.dry_run:
             return "Dry run: would start %s [%s]." % (record.run_id, record.workspace_alias)
