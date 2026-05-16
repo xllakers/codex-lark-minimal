@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "codex-lark-minimal"
+version = "0.1.0"
+description = "Minimal Feishu/Lark bridge for launching and tracking Codex jobs."
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+  "lark-oapi>=1.6.5",
+]
+
+[project.scripts]
+codex-lark = "codex_lark_minimal.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

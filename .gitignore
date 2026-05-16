@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+dist/
+build/
+*.egg-info/
+
+# Local bridge/runtime state
+config.env
+state/
+logs/
+*.log
+
+# Local/editor state
+.DS_Store
+.idea/
+.vscode/
+.claude/
