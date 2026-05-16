@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import List, Optional
 import argparse
 import json
-import os
 import signal
 import subprocess
 import sys
@@ -24,7 +23,30 @@ from codex_lark_minimal.config import load_config
 from codex_lark_minimal.redaction import redact
 from codex_lark_minimal.state import StateStore
 
-CHILD: Optional[subprocess.Popen] = None
+
+class _ChildProcess:
+    """Owns the Codex subprocess handle. Signal handlers close over an instance
+    instead of reaching into module-level state."""
+
+    def __init__(self) -> None:
+        self._popen: Optional[subprocess.Popen] = None
+
+    def spawn(self, command: List[str]) -> subprocess.Popen:
+        self._popen = subprocess.Popen(
+            command,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        return self._popen
+
+    def terminate(self) -> None:
+        if self._popen is not None and self._popen.poll() is None:
+            try:
+                self._popen.terminate()
+            except OSError:
+                pass
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -59,12 +81,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         )
         command = build_exec_command(config, Path(record.workspace_path))
 
-    def handle_signal(signum, _frame):
-        if CHILD is not None and CHILD.poll() is None:
-            try:
-                CHILD.terminate()
-            except OSError:
-                pass
+    child = _ChildProcess()
+
+    def handle_signal(signum: int, _frame: object) -> None:
+        child.terminate()
         try:
             store.update(args.run_id, status="stopped", error="worker received signal %s" % signum)
         finally:
@@ -73,50 +93,45 @@ def main(argv: Optional[List[str]] = None) -> int:
     signal.signal(signal.SIGTERM, handle_signal)
     signal.signal(signal.SIGINT, handle_signal)
 
+    # Worker owns the `status` and `command_preview` fields. The daemon writes
+    # `pid` separately (see WorkerLauncher.launch in bridge.py); keeping those
+    # writes disjoint avoids racing read-modify-write on the same record.
     store.update(
         args.run_id,
         status="running",
-        pid=os.getpid(),
         command_preview=command_preview(command),
     )
-    return run_codex(command, prompt, store, args.run_id)
+    return _run_codex(child, command, prompt, store, args.run_id)
 
 
-def run_codex(command: List[str], prompt: str, store: StateStore, run_id: str) -> int:
-    global CHILD
+def _run_codex(child: _ChildProcess, command: List[str], prompt: str, store: StateStore, run_id: str) -> int:
     tail = ""
     existing = store.get(run_id)
     session_id = existing.codex_session_id if existing else None
     try:
-        CHILD = subprocess.Popen(
-            command,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-        )
+        popen = child.spawn(command)
     except OSError as exc:
         store.update(run_id, status="failed", error=redact(str(exc), max_chars=500))
         return 2
 
-    store.update(run_id, codex_pid=CHILD.pid)
-    if CHILD.stdin is not None:
-        CHILD.stdin.write(prompt)
-        CHILD.stdin.close()
+    store.update(run_id, codex_pid=popen.pid)
+    if popen.stdin is not None:
+        popen.stdin.write(prompt)
+        popen.stdin.close()
 
-    if CHILD.stdout is not None:
-        for line in CHILD.stdout:
+    if popen.stdout is not None:
+        for line in popen.stdout:
             line = line.rstrip("\n")
-            parsed_session = session_id_from_line(line)
+            parsed_session = _session_id_from_line(line)
             if parsed_session:
                 session_id = parsed_session
                 store.update(run_id, codex_session_id=session_id)
             snippet = event_tail_text(line, max_chars=1200)
             if snippet:
-                tail = append_tail(tail, snippet)
+                tail = _append_tail(tail, snippet)
                 store.update(run_id, redacted_output_tail=tail)
 
-    returncode = CHILD.wait()
+    returncode = popen.wait()
     status = "completed" if returncode == 0 else "failed"
     store.update(
         run_id,
@@ -128,7 +143,7 @@ def run_codex(command: List[str], prompt: str, store: StateStore, run_id: str) -
     return 0 if returncode == 0 else 1
 
 
-def session_id_from_line(line: str) -> Optional[str]:
+def _session_id_from_line(line: str) -> Optional[str]:
     try:
         event = json.loads(line)
     except json.JSONDecodeError:
@@ -138,7 +153,7 @@ def session_id_from_line(line: str) -> Optional[str]:
     return None
 
 
-def append_tail(existing: str, addition: str, limit: int = 4000) -> str:
+def _append_tail(existing: str, addition: str, limit: int = 4000) -> str:
     combined = (existing + "\n" + addition).strip() if existing else addition.strip()
     if len(combined) <= limit:
         return combined

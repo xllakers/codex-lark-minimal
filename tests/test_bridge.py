@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest import mock
 import os
+import shutil
 import tempfile
 import unittest
 
-from codex_lark_minimal.bridge import BridgeController, EventMeta
+from codex_lark_minimal.bridge import BridgeController, EventMeta, WorkerLauncher
 from codex_lark_minimal.config import Config
 from codex_lark_minimal.state import JobRecord, StateStore
 
@@ -101,6 +103,84 @@ class BridgeTests(unittest.TestCase):
             self.assertIn("continuation started", reply)
             self.assertEqual(launcher.calls[0][2], "resume")
             self.assertEqual(launcher.calls[0][3], session_id)
+
+    def test_start_rejects_missing_workspace(self):
+        """Workspace deleted after daemon startup must not admit new jobs."""
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp) / "ws"
+            workspace.mkdir()
+            cfg = Config(
+                app_id="cli_xxx",
+                app_secret="secret",
+                allow_all=True,
+                dry_run=True,
+                allowed_senders=frozenset({"s"}),
+                workspaces={"ws": workspace},
+                default_workspace="ws",
+                home=Path(tmp) / "home",
+                config_path=Path(tmp) / "config.env",
+            )
+            launcher = FakeLauncher()
+            controller = BridgeController(cfg, launcher=launcher)
+            shutil.rmtree(workspace)
+            reply = controller.handle_text("codex ws: do thing", EventMeta(chat_id="c", sender_id="s"))
+            self.assertIn("no longer exists", reply)
+            self.assertEqual(launcher.calls, [])
+
+    def test_start_rejects_control_chars(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            controller = BridgeController(config(tmp), launcher=FakeLauncher())
+            reply = controller.handle_text(
+                "codex demo: hello\x00world",
+                EventMeta(chat_id="c", sender_id="s"),
+            )
+            self.assertIn("control characters", reply)
+            self.assertEqual(StateStore(config(tmp)).list(), [])
+
+    def test_continue_rejects_control_chars(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = config(tmp, dry_run=False)
+            store = StateStore(cfg)
+            store.write(
+                JobRecord(
+                    run_id="clk_done",
+                    status="completed",
+                    workspace_alias="demo",
+                    workspace_path=tmp,
+                    prompt_sha256="abc",
+                    prompt_preview="hi",
+                    codex_session_id="019e2ead-c907-7a13-8db8-2c9c14ca3e1b",
+                )
+            )
+            controller = BridgeController(cfg, launcher=FakeLauncher())
+            reply = controller.handle_text(
+                "codex continue clk_done: bad\x01input",
+                EventMeta(chat_id="c", sender_id="s"),
+            )
+            self.assertIn("control characters", reply)
+
+    def test_launch_closes_log_handle_on_popen_error(self):
+        """Popen raising must not leak the parent's log file handle."""
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = config(tmp, dry_run=False)
+            StateStore(cfg).write(
+                JobRecord(
+                    run_id="clk_pf",
+                    status="starting",
+                    workspace_alias="demo",
+                    workspace_path=tmp,
+                    prompt_sha256="abc",
+                    prompt_preview="hi",
+                )
+            )
+            launcher = WorkerLauncher(cfg)
+            with mock.patch("codex_lark_minimal.bridge.subprocess.Popen", side_effect=OSError("boom")):
+                with self.assertRaises(OSError):
+                    launcher.launch("clk_pf", "task", mode="start")
+            # The log file should exist (opened by the `with` block) and be
+            # re-openable in write mode — meaning the previous handle was closed.
+            with cfg.log_path.open("a", encoding="utf-8") as second:
+                second.write("ok")
 
 
 if __name__ == "__main__":

@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, Iterator, List, Optional
+import fcntl
 import json
 import os
 import signal
@@ -15,6 +17,7 @@ from codex_lark_minimal.config import Config, ensure_dirs
 
 ACTIVE_STATUSES = {"starting", "running"}
 TERMINAL_STATUSES = {"dry_run", "completed", "failed", "stopped", "lost"}
+IMMUTABLE_FIELDS = frozenset({"run_id", "created_at"})
 
 
 def now() -> str:
@@ -66,8 +69,32 @@ class StateStore:
         safe = "".join(ch for ch in run_id if ch.isalnum() or ch in {"_", "-"})
         return self.config.jobs_dir / ("%s.json" % safe)
 
+    def lock_path_for(self, run_id: str) -> Path:
+        safe = "".join(ch for ch in run_id if ch.isalnum() or ch in {"_", "-"})
+        return self.config.jobs_dir / ("%s.lock" % safe)
+
     def new_run_id(self) -> str:
         return "clk_%s" % uuid.uuid4().hex[:12]
+
+    @contextmanager
+    def _record_lock(self, run_id: str) -> Iterator[None]:
+        """Serialize read-modify-write for a single run record across processes.
+
+        Daemon and worker can race to update the same JSON file; whole-record
+        serialization under flock keeps disjoint-field updates from clobbering
+        each other.
+        """
+        lock_path = self.lock_path_for(run_id)
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            yield
+        finally:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            finally:
+                os.close(fd)
 
     def write(self, record: JobRecord) -> None:
         record.updated_at = now()
@@ -77,16 +104,21 @@ class StateStore:
         os.replace(str(tmp), str(path))
 
     def update(self, run_id: str, **updates: Any) -> JobRecord:
-        record = self.get(run_id)
-        if record is None:
-            raise KeyError(run_id)
-        for key, value in updates.items():
-            if hasattr(record, key):
-                setattr(record, key, value)
-        self.write(record)
-        return record
+        bad = [key for key in updates if key in IMMUTABLE_FIELDS]
+        if bad:
+            raise ValueError("cannot update immutable field(s): %s" % ", ".join(sorted(bad)))
+        with self._record_lock(run_id):
+            record = self._read(run_id)
+            if record is None:
+                raise KeyError(run_id)
+            for key, value in updates.items():
+                if hasattr(record, key):
+                    setattr(record, key, value)
+            self.write(record)
+            return record
 
-    def get(self, run_id: str) -> Optional[JobRecord]:
+    def _read(self, run_id: str) -> Optional[JobRecord]:
+        """Pure read from disk; no liveness side-effects, safe inside a lock."""
         path = self.path_for(run_id)
         if not path.exists():
             return None
@@ -94,8 +126,13 @@ class StateStore:
             data = json.loads(path.read_text(encoding="utf-8"))
             if not isinstance(data, dict):
                 return None
-            record = JobRecord.from_dict(data)
+            return JobRecord.from_dict(data)
         except (OSError, json.JSONDecodeError, TypeError):
+            return None
+
+    def get(self, run_id: str) -> Optional[JobRecord]:
+        record = self._read(run_id)
+        if record is None:
             return None
         return self.refresh_record(record)
 
@@ -115,29 +152,35 @@ class StateStore:
         return [record for record in self.list() if record.status in ACTIVE_STATUSES]
 
     def refresh_record(self, record: JobRecord) -> JobRecord:
-        if record.status in ACTIVE_STATUSES and record.pid and not pid_alive(record.pid):
-            record.status = "lost"
-            record.error = record.error or "worker process is no longer running"
-            self.write(record)
-        return record
+        if record.status not in ACTIVE_STATUSES or not record.pid or pid_alive(record.pid):
+            return record
+        with self._record_lock(record.run_id):
+            fresh = self._read(record.run_id)
+            if fresh is None or fresh.status not in ACTIVE_STATUSES:
+                return fresh or record
+            fresh.status = "lost"
+            fresh.error = fresh.error or "worker process is no longer running"
+            self.write(fresh)
+            return fresh
 
     def stop(self, run_id: str) -> JobRecord:
-        record = self.get(run_id)
-        if record is None:
-            raise KeyError(run_id)
-        stopped_any = False
-        for pid in [record.pid, record.codex_pid]:
-            if pid and pid_alive(pid):
-                try:
-                    os.kill(pid, signal.SIGTERM)
-                    stopped_any = True
-                except OSError:
-                    pass
-        if record.status in ACTIVE_STATUSES or stopped_any:
-            record.status = "stopped"
-            record.error = "stopped by request"
-            self.write(record)
-        return record
+        with self._record_lock(run_id):
+            record = self._read(run_id)
+            if record is None:
+                raise KeyError(run_id)
+            stopped_any = False
+            for pid in [record.pid, record.codex_pid]:
+                if pid and pid_alive(pid):
+                    try:
+                        os.kill(pid, signal.SIGTERM)
+                        stopped_any = True
+                    except OSError:
+                        pass
+            if record.status in ACTIVE_STATUSES or stopped_any:
+                record.status = "stopped"
+                record.error = "stopped by request"
+                self.write(record)
+            return record
 
 
 def pid_alive(pid: int) -> bool:

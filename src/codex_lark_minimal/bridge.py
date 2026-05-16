@@ -15,6 +15,12 @@ from codex_lark_minimal.config import Config, format_workspaces
 from codex_lark_minimal.redaction import redact
 from codex_lark_minimal.state import JobRecord, StateStore, summarize_job, summarize_jobs
 
+# C0 + C1-C8 + C11-C31 minus tab/lf/cr. These break JSON parsers and shell
+# pipelines if they reach the worker prompt or state file.
+_FORBIDDEN_CONTROL_CHARS = frozenset(
+    chr(c) for c in range(0x20) if c not in (0x09, 0x0A, 0x0D)
+) | frozenset({"\x7f"})
+
 
 @dataclass(frozen=True)
 class EventMeta:
@@ -71,15 +77,19 @@ class BridgeController:
     def start_job(self, command: ParsedCommand, meta: EventMeta) -> str:
         if not command.workspace_alias or command.workspace_alias not in self.config.workspaces:
             return "No workspace configured for this request. Try: codex workspaces"
+        workspace = self.config.workspaces[command.workspace_alias]
+        if not workspace.is_dir():
+            return "Workspace alias '%s' no longer exists on disk: %s" % (command.workspace_alias, workspace)
         if not command.task_text:
             return "No task text found."
         if len(command.task_text) > self.config.max_prompt_chars:
             return "Request is too long; max is %s characters." % self.config.max_prompt_chars
+        if any(ch in _FORBIDDEN_CONTROL_CHARS for ch in command.task_text):
+            return "Request contains invalid control characters."
         active = self.store.active_jobs()
         if len(active) >= self.config.max_running:
             return "Busy: %s job(s) already running.\n%s" % (len(active), summarize_jobs(active))
 
-        workspace = self.config.workspaces[command.workspace_alias]
         record = self.make_record(command.workspace_alias, workspace, command.task_text, meta, status="dry_run" if self.config.dry_run else "starting")
         self.store.write(record)
         if self.config.dry_run:
@@ -101,12 +111,17 @@ class BridgeController:
             return "Job %s has no captured Codex session id, so it cannot be continued." % run_id
         if not instruction:
             return "Use: codex continue %s: <instruction>" % run_id
+        if any(ch in _FORBIDDEN_CONTROL_CHARS for ch in instruction):
+            return "Request contains invalid control characters."
+        workspace = Path(original.workspace_path)
+        if not workspace.is_dir():
+            return "Workspace for %s no longer exists on disk: %s" % (run_id, workspace)
         active = self.store.active_jobs()
         if len(active) >= self.config.max_running:
             return "Busy: %s job(s) already running.\n%s" % (len(active), summarize_jobs(active))
         record = self.make_record(
             original.workspace_alias,
-            Path(original.workspace_path),
+            workspace,
             instruction,
             meta,
             status="dry_run" if self.config.dry_run else "starting",
@@ -194,20 +209,24 @@ class WorkerLauncher:
         if session_id:
             command.extend(["--session-id", session_id])
         self.config.logs_dir.mkdir(parents=True, exist_ok=True)
-        log = self.config.log_path.open("a", encoding="utf-8")
-        process = subprocess.Popen(
-            command,
-            stdin=subprocess.PIPE,
-            stdout=log,
-            stderr=subprocess.STDOUT,
-            text=True,
-            start_new_session=True,
-        )
-        if process.stdin is not None:
-            process.stdin.write(task_text)
-            process.stdin.close()
-        log.close()
+        # `with` guarantees the parent's log handle is closed even if Popen raises;
+        # Popen duplicates the fd into the child so closing here is correct.
+        with self.config.log_path.open("a", encoding="utf-8") as log:
+            process = subprocess.Popen(
+                command,
+                stdin=subprocess.PIPE,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                text=True,
+                start_new_session=True,
+            )
+            if process.stdin is not None:
+                process.stdin.write(task_text)
+                process.stdin.close()
+        # Daemon owns the `pid` field only. The worker writes its own `status`
+        # transition to "running" once it boots, so the two writers never race
+        # on the same field.
         try:
-            StateStore(self.config).update(run_id, pid=process.pid, status="running")
+            StateStore(self.config).update(run_id, pid=process.pid)
         except KeyError:
             pass
