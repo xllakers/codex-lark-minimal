@@ -14,8 +14,9 @@ that spawns Codex as a subprocess per job. About 1.4K lines of Python plus a
 single dependency (`lark-oapi`).
 
 **Isn't:** a multi-platform/multi-agent control plane. No web UI, no live
-mid-turn steering, no raw prompt/output persistence, no public webhook tunnel.
-If you need any of that, look at [chenhg5/cc-connect](https://github.com/chenhg5/cc-connect).
+mid-turn steering, no raw prompt/output persistence, no public webhook tunnel,
+no in-chat tool-approval flow. If you need any of that, see
+[Related projects](#related-projects) below.
 
 Design principles, in priority order: **safe → minimalist → easy to maintain.**
 See `AGENTS.md` for the full rules.
@@ -218,6 +219,69 @@ Repo guardrails for AI agents live in `AGENTS.md` (read automatically by
 Codex) and `CLAUDE.md` (which imports `AGENTS.md` for Claude Code). For
 non-trivial changes, see the `skills/codex-lark-design` and
 `skills/codex-lark-review` checklists.
+
+## Related projects
+
+If this repo's three principles (safe → minimalist → easy to maintain) don't
+match what you need, two larger projects in the same space are worth a look:
+
+| | This repo | [chenhg5/cc-connect](https://github.com/chenhg5/cc-connect) | [op7418/Claude-to-IM-skill](https://github.com/op7418/Claude-to-IM-skill) |
+|---|---|---|---|
+| **Language** | Python | Go | TypeScript |
+| **Size** | ~1.4K LOC, 1 dep | binary + web UI, much larger | ~2.5k★, larger |
+| **Agents** | Codex | 10+ (Codex, CC, Gemini, …) | Claude Code + Codex |
+| **Chat platforms** | Feishu/Lark | 11 (Slack, Discord, Telegram, DingTalk, …) | 5 (Telegram, Discord, Feishu, QQ, WeChat) |
+| **In-chat tool approval** | ❌ (out of scope) | ✅ `/mode` + per-tool prompt | ✅ SSE `canUseTool()` + inline buttons |
+| **Live streaming** | ❌ | ✅ | ✅ |
+| **Web admin UI** | ❌ | ✅ embedded | ❌ |
+| **Install target** | local daemon + launchd | local daemon (npm/Homebrew) | drop-in `~/.claude/skills/` or `~/.codex/skills/` |
+| **Default-deny + dry-run** | ✅ | partial | partial |
+
+**Why pick this one over the others:** you want a small, single-purpose,
+auditable bridge that you can read end-to-end in an afternoon. **Why pick
+one of the others:** you need multiple platforms or agents, in-chat tool
+approval, or live streaming, and you're willing to take on a much larger
+codebase to get them.
+
+> A small but real advantage of this project: it's plain Python with one
+> dependency. For anyone who wants to *understand* and modify the bridge
+> rather than just install it, that's an order of magnitude less code to read
+> than a Go binary or a TypeScript codebase with a build step.
+
+### Top things worth borrowing from cc-connect and Claude-to-IM-skill
+
+Lessons we've taken from reading both — some applied here, some explicitly
+declined as out of scope:
+
+1. **Doctor commands that probe live, not just files.** Both projects ship
+   diagnostic commands that hit the platform's auth endpoint to confirm the
+   token actually works, not just that the env var is non-empty. (We do this
+   too, in `src/codex_lark_minimal/doctor.py`.) Worth doing in any bridge.
+2. **Allowlists per identity, not per network.** Neither project trusts the
+   transport — both gate on stable IM-side identifiers (sender / chat ID).
+   This is what makes "no public IP needed" actually safe.
+3. **Secret redaction by *pattern*, not by registered token.** Both mask
+   anything that looks like a token in logs without needing to know the value
+   in advance. Cheap to add, catches the long tail.
+4. **State directory is `chmod 600` and outside the repo.** Every serious
+   variant puts state in `~/.<something>/`, not in the source tree. Stops
+   accidental commits of run artifacts.
+5. **(Declined) In-chat tool approval gateway.** Claude-to-IM's
+   `canUseTool()` block-and-await pattern is genuinely clever, but it
+   inverts the trust model — the IM becomes part of the control loop, not
+   just a transport. Our `AGENTS.md` keeps live mid-turn steering out of
+   scope on purpose.
+6. **(Declined) Multi-platform abstraction.** cc-connect's per-platform
+   adapter layer is well-designed, but every adapter is surface area. We'd
+   rather one platform, well-understood.
+7. **(Optional, worth porting) OS-user isolation.** cc-connect's
+   `run_as_user` config lets the agent subprocess run under a different
+   Unix uid. ~30 lines wrapping `subprocess.Popen` would add a real layer
+   of defense for shared hosts. Open to a PR.
+8. **(Optional, worth considering) Skill-first install.** Claude-to-IM lives
+   in `~/.claude/skills/<name>/`, which makes it discoverable from inside
+   the agent. A future version of this project could ship as an install
+   target there in addition to `~/.codex/bridges/`.
 
 ## License
 
