@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Tuple
 
 from codex_lark_minimal.config import Config
 
@@ -17,18 +17,23 @@ class ParsedCommand:
 
 
 def parse_message(text: str, config: Config) -> Optional[ParsedCommand]:
-    body = normalize(text)
-    if not body:
+    # Two-track parse: `body_flat` collapses whitespace for command/alias
+    # detection (tolerant of how users type the prefix); `raw` keeps the
+    # user's original line breaks so multi-line code in `task_text` survives.
+    raw = text.replace(" ", " ").strip()
+    if not raw:
         return None
+    body_flat = " ".join(raw.split())
+
     prefix = config.trigger_prefix.strip()
     if prefix:
-        if not body.lower().startswith(prefix.lower()):
+        if not body_flat.lower().startswith(prefix.lower()):
             return None
-        body = body[len(prefix) :].strip()
-    if not body:
+        body_flat = body_flat[len(prefix) :].strip()
+    if not body_flat:
         return ParsedCommand(kind="help")
 
-    lowered = body.lower()
+    lowered = body_flat.lower()
     if lowered == "help":
         return ParsedCommand(kind="help")
     if lowered == "workspaces":
@@ -38,23 +43,28 @@ def parse_message(text: str, config: Config) -> Optional[ParsedCommand]:
     if lowered == "status":
         return ParsedCommand(kind="status")
     if lowered.startswith("status "):
-        return ParsedCommand(kind="status_one", run_id=body.split(None, 1)[1].strip())
+        return ParsedCommand(kind="status_one", run_id=body_flat.split(None, 1)[1].strip())
     if lowered.startswith("stop "):
-        return ParsedCommand(kind="stop", run_id=body.split(None, 1)[1].strip())
+        return ParsedCommand(kind="stop", run_id=body_flat.split(None, 1)[1].strip())
     if lowered.startswith("continue "):
-        rest = body.split(None, 1)[1].strip()
+        rest = body_flat.split(None, 1)[1].strip()
         if ":" not in rest:
             return ParsedCommand(kind="bad_continue", task_text="Use: codex continue <run_id>: <instruction>")
-        run_id, instruction = rest.split(":", 1)
-        return ParsedCommand(kind="continue", run_id=run_id.strip(), task_text=instruction.strip())
+        run_id_flat, flat_instruction = rest.split(":", 1)
+        run_id = run_id_flat.strip()
+        # Pull the instruction from raw so newlines/indentation survive; fall
+        # back to the flat form only if the marker can't be located in raw.
+        instruction = _text_after_marker(raw, run_id + ":") or flat_instruction.strip()
+        return ParsedCommand(kind="continue", run_id=run_id, task_text=instruction)
 
-    alias, task = route_start(body, config)
-    if not alias or not task:
-        return ParsedCommand(kind="unknown", task_text=body)
+    alias, flat_task = route_start(body_flat, config)
+    if not alias or not flat_task:
+        return ParsedCommand(kind="unknown", task_text=body_flat)
+    task = _text_after_marker(raw, alias + ":") or flat_task
     return ParsedCommand(kind="start", workspace_alias=alias, task_text=task)
 
 
-def route_start(body: str, config: Config) -> tuple:
+def route_start(body: str, config: Config) -> Tuple[str, str]:
     for alias in sorted(config.workspaces, key=len, reverse=True):
         marker = alias + ":"
         slash_marker = "/" + alias + " "
@@ -66,7 +76,18 @@ def route_start(body: str, config: Config) -> tuple:
 
 
 def normalize(text: str) -> str:
-    return " ".join(text.replace("\u00a0", " ").split()).strip()
+    return " ".join(text.replace(" ", " ").split()).strip()
+
+
+def _text_after_marker(raw: str, marker: str) -> str:
+    """Locate the first case-insensitive occurrence of `marker` in `raw` and
+    return everything after it, with outer whitespace stripped but internal
+    whitespace (newlines, indentation) preserved. Returns "" if not found.
+    """
+    idx = raw.lower().find(marker.lower())
+    if idx < 0:
+        return ""
+    return raw[idx + len(marker) :].strip()
 
 
 def help_text(config: Config) -> str:

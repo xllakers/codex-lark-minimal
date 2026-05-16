@@ -51,6 +51,32 @@ class CommandTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             self.assertIsNone(parse_message("hello", config(tmp)))
 
+    def test_start_preserves_multiline_task(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            text = "codex opencode: please refactor this:\ndef foo():\n    pass"
+            parsed = parse_message(text, config(tmp))
+        self.assertEqual(parsed.kind, "start")
+        self.assertEqual(parsed.workspace_alias, "opencode")
+        self.assertEqual(
+            parsed.task_text,
+            "please refactor this:\ndef foo():\n    pass",
+        )
+
+    def test_start_preserves_internal_whitespace_with_default_workspace(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            text = "codex agent-foundry: line1\n\n  line2"
+            parsed = parse_message(text, config(tmp))
+        self.assertEqual(parsed.kind, "start")
+        self.assertEqual(parsed.task_text, "line1\n\n  line2")
+
+    def test_continue_preserves_multiline_instruction(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            text = "codex continue clk_abc: code:\n  def foo()\n  return 1"
+            parsed = parse_message(text, config(tmp))
+        self.assertEqual(parsed.kind, "continue")
+        self.assertEqual(parsed.run_id, "clk_abc")
+        self.assertEqual(parsed.task_text, "code:\n  def foo()\n  return 1")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -115,6 +115,7 @@ class StateStore:
                 if hasattr(record, key):
                     setattr(record, key, value)
             self.write(record)
+            self._cleanup_lock_if_terminal(record)
             return record
 
     def _read(self, run_id: str) -> Optional[JobRecord]:
@@ -161,6 +162,7 @@ class StateStore:
             fresh.status = "lost"
             fresh.error = fresh.error or "worker process is no longer running"
             self.write(fresh)
+            self._cleanup_lock_if_terminal(fresh)
             return fresh
 
     def stop(self, run_id: str) -> JobRecord:
@@ -180,7 +182,22 @@ class StateStore:
                 record.status = "stopped"
                 record.error = "stopped by request"
                 self.write(record)
+            self._cleanup_lock_if_terminal(record)
             return record
+
+    def _cleanup_lock_if_terminal(self, record: JobRecord) -> None:
+        """Remove the `<run_id>.lock` file once a job has reached a terminal
+        status. Called inside the lock: the FD stays valid until close, so any
+        writer already queued on `flock` finishes against the same inode. New
+        writers arriving after the unlink would `O_CREAT` a fresh inode — but
+        by contract no further legitimate writes happen on a terminal record.
+        """
+        if record.status not in TERMINAL_STATUSES:
+            return
+        try:
+            self.lock_path_for(record.run_id).unlink()
+        except FileNotFoundError:
+            pass
 
 
 def pid_alive(pid: int) -> bool:

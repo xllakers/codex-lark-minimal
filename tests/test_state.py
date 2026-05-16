@@ -74,6 +74,61 @@ class StateTests(unittest.TestCase):
                 store.update("clk_imm", **{"run_id": "clk_other"})
             self.assertEqual(store.get("clk_imm").run_id, "clk_imm")
 
+    def test_terminal_update_removes_lock_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = StateStore(config(tmp))
+            store.write(
+                JobRecord(
+                    run_id="clk_done",
+                    status="starting",
+                    workspace_alias="demo",
+                    workspace_path=tmp,
+                    prompt_sha256="abc",
+                    prompt_preview="hi",
+                )
+            )
+            store.update("clk_done", status="running")
+            self.assertTrue(store.lock_path_for("clk_done").exists())
+            store.update("clk_done", status="completed", returncode=0)
+            self.assertFalse(store.lock_path_for("clk_done").exists())
+            self.assertTrue(store.path_for("clk_done").exists())
+
+    def test_non_terminal_update_keeps_lock_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = StateStore(config(tmp))
+            store.write(
+                JobRecord(
+                    run_id="clk_run",
+                    status="starting",
+                    workspace_alias="demo",
+                    workspace_path=tmp,
+                    prompt_sha256="abc",
+                    prompt_preview="hi",
+                )
+            )
+            store.update("clk_run", status="running")
+            self.assertTrue(store.lock_path_for("clk_run").exists())
+
+    def test_stop_removes_lock_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = StateStore(config(tmp))
+            store.write(
+                JobRecord(
+                    run_id="clk_stop",
+                    status="running",
+                    workspace_alias="demo",
+                    workspace_path=tmp,
+                    prompt_sha256="abc",
+                    prompt_preview="hi",
+                )
+            )
+            # Touch the lock file via an update so it exists at stop time.
+            store.update("clk_stop", command_preview="cmd")
+            self.assertTrue(store.lock_path_for("clk_stop").exists())
+            stopped = store.stop("clk_stop")
+            self.assertEqual(stopped.status, "stopped")
+            self.assertFalse(store.lock_path_for("clk_stop").exists())
+
     def test_concurrent_updates_preserve_disjoint_fields(self):
         """Two writers updating disjoint fields under flock should not clobber each other."""
         with tempfile.TemporaryDirectory() as tmp:
