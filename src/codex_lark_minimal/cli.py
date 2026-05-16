@@ -24,6 +24,7 @@ def build_parser() -> argparse.ArgumentParser:
     subcommands.add_parser("daemon")
     subcommands.add_parser("doctor")
     subcommands.add_parser("recent")
+    subcommands.add_parser("setup")
 
     status = subcommands.add_parser("status")
     status.add_argument("run_id", nargs="?")
@@ -57,6 +58,11 @@ def main(argv=None) -> int:
         ok, text = run_doctor(config)
         print(text)
         return 0 if ok else 2
+
+    if args.command == "setup":
+        from codex_lark_minimal.setup import run_setup
+
+        return run_setup(config)
 
     if args.command == "daemon":
         errors = validate_config(config, for_daemon=True)
