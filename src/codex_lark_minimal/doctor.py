@@ -45,14 +45,14 @@ def run_doctor(config: Config) -> Tuple[bool, str]:
         ok, message = feishu_token_check(config)
         checks.append((ok, message))
     else:
-        checks.append((config.dry_run, "Feishu credentials missing (OK only in dry-run discovery mode)"))
+        checks.append((config.dry_run, "Feishu credentials missing (set via `codex-lark setup`)"))
 
     if config.allowed_senders or config.allowed_chats:
-        checks.append((True, "allowlist configured"))
+        checks.append((True, "allowlist configured (real mode)"))
     else:
         checks.append((
-            config.dry_run and config.allow_all,
-            "allowlist missing (OK only with dry-run allow-all discovery)",
+            config.dry_run,
+            "allowlist empty — daemon will run in dry-run. Run `codex-lark setup` to go live.",
         ))
 
     active = store.active_jobs()

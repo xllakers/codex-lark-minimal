@@ -21,7 +21,6 @@ class Config:
     app_id: Optional[str]
     app_secret: Optional[str]
     domain: str = "open.feishu.cn"
-    allow_all: bool = False
     dry_run: bool = True
     allowed_senders: frozenset = field(default_factory=frozenset)
     allowed_chats: frozenset = field(default_factory=frozenset)
@@ -69,14 +68,22 @@ def load_config(path: Optional[Path] = None) -> Config:
     codex_home = Path(env.get("CODEX_HOME", str(DEFAULT_CODEX_HOME))).expanduser()
     workspaces = parse_workspaces(env.get("FEISHU_CODEX_WORKSPACES", ""))
     default_workspace = env.get("FEISHU_CODEX_DEFAULT_WORKSPACE") or (next(iter(workspaces)) if workspaces else "")
+    allowed_senders = frozenset(csv_values(first(env, "FEISHU_CODEX_ALLOWED_SENDERS", "FEISHU_ALLOWED_SENDER_IDS")))
+    allowed_chats = frozenset(csv_values(first(env, "FEISHU_CODEX_ALLOWED_CHATS", "FEISHU_ALLOWED_CHAT_IDS")))
+    # Default semantics: empty allowlist ⇒ dry-run automatically. An explicit
+    # FEISHU_CODEX_DRY_RUN wins (lets you force dry-run while testing with a
+    # populated allowlist).
+    if "FEISHU_CODEX_DRY_RUN" in env:
+        dry_run = env_bool(env, "FEISHU_CODEX_DRY_RUN", True)
+    else:
+        dry_run = not (allowed_senders or allowed_chats)
     return Config(
         app_id=empty_to_none(first(env, "FEISHU_APP_ID", "LARK_APP_ID")),
         app_secret=empty_to_none(first(env, "FEISHU_APP_SECRET", "LARK_APP_SECRET")),
         domain=normalize_domain(env.get("FEISHU_DOMAIN") or env.get("LARK_DOMAIN") or "https://open.feishu.cn"),
-        allow_all=env_bool(env, "FEISHU_CODEX_ALLOW_ALL", False),
-        dry_run=env_bool(env, "FEISHU_CODEX_DRY_RUN", True),
-        allowed_senders=frozenset(csv_values(first(env, "FEISHU_CODEX_ALLOWED_SENDERS", "FEISHU_ALLOWED_SENDER_IDS"))),
-        allowed_chats=frozenset(csv_values(first(env, "FEISHU_CODEX_ALLOWED_CHATS", "FEISHU_ALLOWED_CHAT_IDS"))),
+        dry_run=dry_run,
+        allowed_senders=allowed_senders,
+        allowed_chats=allowed_chats,
         trigger_prefix=(env.get("FEISHU_CODEX_TRIGGER_PREFIX") or "codex").strip(),
         workspaces=workspaces,
         default_workspace=default_workspace,
@@ -140,8 +147,6 @@ def validate_config(config: Config, *, for_daemon: bool = False) -> List[str]:
     if not config.dry_run:
         if not config.app_id or not config.app_secret:
             errors.append("real mode requires FEISHU_APP_ID and FEISHU_APP_SECRET")
-        if config.allow_all:
-            errors.append("real mode refuses FEISHU_CODEX_ALLOW_ALL=1")
         if not config.allowed_senders and not config.allowed_chats:
             errors.append("real mode requires FEISHU_CODEX_ALLOWED_SENDERS or FEISHU_CODEX_ALLOWED_CHATS")
     if for_daemon and (not config.app_id or not config.app_secret):

@@ -24,7 +24,6 @@ def config(tmp: str, *, dry_run: bool = True) -> Config:
     return Config(
         app_id="cli_xxx",
         app_secret="secret",
-        allow_all=True,
         dry_run=dry_run,
         allowed_senders=frozenset({"s"}),
         workspaces={"demo": Path(tmp)},
@@ -112,7 +111,6 @@ class BridgeTests(unittest.TestCase):
             cfg = Config(
                 app_id="cli_xxx",
                 app_secret="secret",
-                allow_all=True,
                 dry_run=True,
                 allowed_senders=frozenset({"s"}),
                 workspaces={"ws": workspace},

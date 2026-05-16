@@ -12,7 +12,6 @@ def config(tmp: str) -> Config:
     return Config(
         app_id=None,
         app_secret=None,
-        allow_all=True,
         dry_run=True,
         workspaces={"agent-foundry": Path(tmp), "opencode": Path(tmp)},
         default_workspace="agent-foundry",

@@ -66,8 +66,6 @@ class BridgeController:
         return "Unknown command.\n\n" + help_text(self.config)
 
     def allowed(self, meta: EventMeta) -> bool:
-        if self.config.allow_all and self.config.dry_run:
-            return True
         if meta.sender_id and meta.sender_id in self.config.allowed_senders:
             return True
         if meta.chat_id and meta.chat_id in self.config.allowed_chats:
