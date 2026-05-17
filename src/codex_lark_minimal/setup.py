@@ -268,13 +268,20 @@ _LARK_SECRET_SCRUB_INSTALLED = False
 
 
 def _install_lark_secret_scrub() -> None:
-    """Install a logging filter that masks app_secret in lark-oapi log lines.
+    """Install a logging filter that masks secrets in lark-oapi log lines.
 
-    lark-oapi at DEBUG level dumps full HTTP request bodies, which include
-    `{"app_id": "...", "app_secret": "..."}` — putting credentials in
-    plaintext logs that operators may paste into bug reports. The filter
-    rewrites the secret in-place before the message hits any handler.
+    Covers two categories of credential that lark logs by default:
 
+      - ``app_secret`` in HTTP request bodies (DEBUG-level — we don't enable
+        DEBUG ourselves, but a future lark version may surface this at INFO
+        and this is defense in depth).
+      - ``access_key`` and ``ticket`` in the WS endpoint URL printed at INFO
+        when the connection is established. These are session-scoped tokens,
+        rotated per reconnect, but should still not appear in terminal
+        scrollback / pasted diagnostic output.
+
+    The filter rewrites the message in-place before any handler sees it, so
+    even external handlers (file, syslog, structured) get the masked form.
     Idempotent — installs once per process.
     """
     global _LARK_SECRET_SCRUB_INSTALLED
@@ -283,9 +290,13 @@ def _install_lark_secret_scrub() -> None:
     import logging
     import re
 
+    # App Secret (most sensitive — long-lived).
     json_pat = re.compile(r'("app_secret"\s*:\s*)"[^"]*"')
     py_pat = re.compile(r"('app_secret'\s*:\s*)'[^']*'")
     kv_pat = re.compile(r"(\bapp_secret\s*=\s*)[^\s&'\"]+")
+
+    # Session tokens (lower severity — rotated per WS connect).
+    url_token_pat = re.compile(r"(\b(?:access_key|ticket)=)[^&\s'\"]+")
 
     class _Scrub(logging.Filter):
         def filter(self, record: "logging.LogRecord") -> bool:
@@ -293,11 +304,12 @@ def _install_lark_secret_scrub() -> None:
                 msg = record.getMessage()
             except Exception:
                 return True
-            if "app_secret" not in msg:
+            if not ("app_secret" in msg or "access_key=" in msg or "ticket=" in msg):
                 return True
             scrubbed = json_pat.sub(r'\1"***"', msg)
             scrubbed = py_pat.sub(r"\1'***'", scrubbed)
             scrubbed = kv_pat.sub(r"\1***", scrubbed)
+            scrubbed = url_token_pat.sub(r"\1***", scrubbed)
             if scrubbed != msg:
                 record.msg = scrubbed
                 record.args = None
