@@ -336,34 +336,15 @@ async def _listen_for_events(
     except ImportError as exc:
         raise RuntimeError("lark-oapi not installed: %s" % exc) from exc
 
-    # Always install a scrub filter on lark's logger — at DEBUG it dumps HTTP
-    # request bodies including app_secret in plaintext, and we don't want
-    # operators (or copy/paste of diagnostic output) to leak credentials.
+    # Defense in depth: scrub app_secret from any lark log line in case lark
+    # adds credential logging at INFO in a future version. We deliberately do
+    # NOT elevate lark to DEBUG ourselves — its DEBUG output mixes WS frame
+    # traces (which we'd like) with HTTP request bodies that contain the
+    # App Secret in plaintext (which we very much do not). We instrument
+    # what we need at our own layer below.
     _install_lark_secret_scrub()
 
-    # Optional forensic mode: elevate lark-oapi's logger so every WS frame
-    # ("receive message, payload: …" / "receive pong") is visible. Use this
-    # when discovery times out and you need to tell whether Feishu is
-    # delivering anything to this subscription. Default off — noisy.
-    channel_kwargs: Dict[str, Any] = {
-        "app_id": app_id,
-        "app_secret": app_secret,
-        "domain": domain,
-    }
-    if os.environ.get("FEISHU_CODEX_LARK_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}:
-        import logging
-
-        from lark_oapi.core.enum import LogLevel
-
-        logging.getLogger("Lark").setLevel(logging.DEBUG)
-        # WSClient.__init__ resets the lark logger to its own log_level argument,
-        # overriding the setLevel above. Pass log_level=DEBUG through so the
-        # final effective level actually stays at DEBUG.
-        channel_kwargs["log_level"] = LogLevel.DEBUG
-        _diag("  FEISHU_CODEX_LARK_DEBUG=1 → lark logger at DEBUG; expect raw WS frames on stdout")
-        _diag("  (app_secret values are scrubbed from logs, but rotate creds if you share output)")
-
-    channel = FeishuChannel(**channel_kwargs)
+    channel = FeishuChannel(app_id=app_id, app_secret=app_secret, domain=domain)
     events: List[Tuple[Any, str]] = []
     first_match = asyncio.Event()
     matched: Dict[str, Any] = {"meta": None}
@@ -397,8 +378,20 @@ async def _listen_for_events(
     async def on_error(err: Any) -> None:
         _diag("  channel error: %s" % redact(str(err), max_chars=200))
 
+    def on_reconnecting(*_args: Any) -> None:
+        # Frequent reconnects with no `received:` in between usually means
+        # Feishu accepts the WS but never delivers events — common when the
+        # released app version has long-connection enabled but no event
+        # subscriptions wired up, so the server lets keepalive lapse.
+        _diag("  WS reconnecting (keepalive lapsed or transport reset)")
+
+    def on_reconnected(*_args: Any) -> None:
+        _diag("  WS reconnected")
+
     channel.on("message", on_message)
     channel.on("error", on_error)
+    channel.on("reconnecting", on_reconnecting)
+    channel.on("reconnected", on_reconnected)
 
     try:
         await channel.start_background(timeout=15)
@@ -427,10 +420,23 @@ async def _listen_for_events(
         _diag("    2. Your app version is *published* (not draft) on open.feishu.cn / open.larksuite.com.")
         _diag("    3. Event `im.message.receive_v1` is subscribed in the *released* version.")
         _diag("    4. In groups: the bot is in the chat and you @mention it, OR the chat allows bot-receive.")
-        _diag("  For forensic detail (every WS frame Feishu sends), Ctrl-C and rerun with:")
-        _diag("    FEISHU_CODEX_LARK_DEBUG=1 codex-lark setup")
+        _diag("  Look for 'WS reconnecting' above — if it keeps reconnecting without events,")
+        _diag("  Feishu accepts the WS but isn't sending anything (usually cause #3).")
+
+    async def ws_alive_heartbeat() -> None:
+        # Independent of lark's reconnect events: poll the underlying WS
+        # connection every 30s and report alive/dead. Gives the operator a
+        # rhythm to compare against — if heartbeats stop, the WS is gone.
+        while not first_match.is_set():
+            await asyncio.sleep(30)
+            if first_match.is_set():
+                return
+            ws = getattr(channel, "ws_client", None)
+            conn = getattr(ws, "_conn", None) if ws is not None else None
+            _diag("  ws-alive=%s" % ("yes" if conn is not None else "no"))
 
     hint_task = asyncio.create_task(diagnostic_hint())
+    heartbeat_task = asyncio.create_task(ws_alive_heartbeat())
 
     try:
         try:
@@ -454,11 +460,12 @@ async def _listen_for_events(
             reply_result = {"ok": False, "error": redact(str(exc), max_chars=200)}
         return list(events), reply_result
     finally:
-        hint_task.cancel()
-        try:
-            await hint_task
-        except (asyncio.CancelledError, Exception):
-            pass
+        for task in (hint_task, heartbeat_task):
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
         try:
             await channel.disconnect()
         except Exception:
