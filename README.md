@@ -48,7 +48,19 @@ Go to [open.feishu.cn](https://open.feishu.cn) (mainland China) or
 [open.larksuite.com](https://open.larksuite.com) (global), click
 **Console → Create Custom App**, and give it a name.
 
+> **Two rules for all of Step 1:**
+> - **Pick one domain and stick with it.** A bot on `open.feishu.cn` only
+>   sees messages from Feishu clients; a bot on `open.larksuite.com` only
+>   sees messages from Lark clients. Cross-domain messages silently never
+>   arrive. The wizard auto-detects which domain your App ID belongs to,
+>   so just make sure you DM from the matching client.
+> - **The bridge only reads your *released* version.** Sidebar edits don't
+>   take effect until you publish (Step 1d). Re-publish after any future
+>   change too.
+
 Then do four things in the dev console. Each is one panel and one screenshot.
+Screenshots below are from the CN console; the Lark global console uses the
+same layout with English labels (shown in parentheses throughout).
 
 #### 1a. Enable the Bot capability
 
@@ -88,9 +100,8 @@ Then do four things in the dev console. Each is one panel and one screenshot.
 1. Sidebar → **版本管理与发布** (App Release).
 2. Scroll to the bottom and click **保存** (Save and publish).
 
-> ⚠️ **The bridge only sees the *released* version's settings.** Sidebar
-> changes don't take effect until you publish a new version. After any
-> change to permissions, events, or availability, re-publish.
+> ⚠️ Reminder: any future change to permissions, events, or availability
+> requires re-publishing — the bridge only reads the released version.
 
 Finally, copy **App ID** and **App Secret** from **凭证与基础信息**
 (Credentials & Basic Info). The wizard asks for these two values and
@@ -111,6 +122,10 @@ and launches the **setup wizard**. The wizard:
 2. Validates them against Feishu's auth endpoint.
 3. Opens a long connection and waits up to 180s. **DM your bot any
    message** — the wizard captures it and allowlists you automatically.
+   To find the bot: open the contact search in Feishu/Lark, type your app
+   name, click the bot, and send anything. If it doesn't appear, check
+   **可用范围** (Availability) in the console — the default is empty,
+   which hides the bot from everyone including you.
 4. Writes everything to `config.env` (`chmod 600`).
 
 ### Step 3 — Start the daemon
