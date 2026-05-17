@@ -360,6 +360,8 @@ async def _listen_for_events(
     events: List[Tuple[Any, str]] = []
     first_match = asyncio.Event()
     matched: Dict[str, Any] = {"meta": None}
+    shutting_down: Dict[str, bool] = {"value": False}
+    reconnect_count: Dict[str, int] = {"value": 0}
 
     async def on_message(msg: Any) -> None:
         text = str(get_nested(msg, "content_text") or "")
@@ -391,13 +393,20 @@ async def _listen_for_events(
         _diag("  channel error: %s" % redact(str(err), max_chars=200))
 
     def on_reconnecting(*_args: Any) -> None:
+        # Suppress during our own clean shutdown — lark fires this callback
+        # after our channel.disconnect() and it's not a real mid-flight event.
+        if shutting_down["value"]:
+            return
         # Frequent reconnects with no `received:` in between usually means
         # Feishu accepts the WS but never delivers events — common when the
         # released app version has long-connection enabled but no event
         # subscriptions wired up, so the server lets keepalive lapse.
+        reconnect_count["value"] += 1
         _diag("  WS reconnecting (keepalive lapsed or transport reset)")
 
     def on_reconnected(*_args: Any) -> None:
+        if shutting_down["value"]:
+            return
         _diag("  WS reconnected")
 
     channel.on("message", on_message)
@@ -472,6 +481,61 @@ async def _listen_for_events(
             reply_result = {"ok": False, "error": redact(str(exc), max_chars=200)}
         return list(events), reply_result
     finally:
+        # If we're returning empty-handed, print an actionable diagnosis based
+        # on what we *did* see — the two failure modes look identical from
+        # outside but point at different fixes.
+        if not first_match.is_set():
+            _diag("")
+            if reconnect_count["value"] > 0:
+                _diag(
+                    "  Diagnosis: WS reconnected %d time(s) without delivering any events."
+                    % reconnect_count["value"]
+                )
+                _diag(
+                    "  Symptom matches: released app version has long-connection enabled"
+                    " but no event subscriptions wired up, so Feishu accepts the WS and"
+                    " then lets the keepalive lapse."
+                )
+                _diag("  Fix: in Lark portal → App Release → Version Management → released")
+                _diag("  version detail → Events Configuration. If `im.message.receive_v1`")
+                _diag("  isn't listed, add it in the main Events tab + Permissions, then")
+                _diag("  create + publish a new version.")
+            else:
+                _diag(
+                    "  Diagnosis: WS stayed connected for the full %ds, 0 events received."
+                    % timeout
+                )
+                _diag(
+                    "  This is almost certainly a Feishu-side configuration issue, not"
+                    " network or code. Check (in order of likelihood):"
+                )
+                _diag(
+                    "    a) You're DMing the bot from the Feishu (飞书) Chinese client?"
+                )
+                _diag(
+                    "       The bot is registered on open.feishu.cn (CN). Messages sent"
+                    " from Lark (international, open.larksuite.com) won't bridge — they're"
+                    " separate products with separate message buses."
+                )
+                _diag(
+                    "    b) The currently *released* version's Events Configuration"
+                    " includes `im.message.receive_v1`?"
+                )
+                _diag(
+                    "       Lark portal → App Release → Version Management → click the"
+                    " released version → Events Configuration. The draft / current"
+                    " settings don't count; only the released version's subscriptions"
+                    " are wired to this WS."
+                )
+                _diag(
+                    "    c) The released version's Availability scope (可用范围)"
+                    " includes your user account?"
+                )
+                _diag(
+                    "       Same page. If 'Specified members' / 指定成员, add yourself"
+                    " or switch to 'All members of the tenant' and re-publish."
+                )
+        shutting_down["value"] = True
         for task in (hint_task, heartbeat_task):
             task.cancel()
             try:
