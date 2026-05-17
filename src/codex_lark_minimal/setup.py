@@ -293,6 +293,16 @@ async def _listen_for_events(
     except ImportError as exc:
         raise RuntimeError("lark-oapi not installed: %s" % exc) from exc
 
+    # Optional forensic mode: elevate lark-oapi's logger so every WS frame
+    # ("receive message, payload: …" / "receive pong") is visible. Use this
+    # when discovery times out and you need to tell whether Feishu is
+    # delivering anything to this subscription. Default off — noisy.
+    if os.environ.get("FEISHU_CODEX_LARK_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}:
+        import logging
+
+        logging.getLogger("Lark").setLevel(logging.DEBUG)
+        _diag("  FEISHU_CODEX_LARK_DEBUG=1 → lark logger at DEBUG; expect raw WS frames on stdout")
+
     channel = FeishuChannel(app_id=app_id, app_secret=app_secret, domain=domain)
     events: List[Tuple[Any, str]] = []
     first_match = asyncio.Event()
@@ -355,8 +365,10 @@ async def _listen_for_events(
         )
         _diag("    1. The bot you DMed matches the open_id printed above.")
         _diag("    2. Your app version is *published* (not draft) on open.feishu.cn / open.larksuite.com.")
-        _diag("    3. Event `im.message.receive_v1` is subscribed.")
+        _diag("    3. Event `im.message.receive_v1` is subscribed in the *released* version.")
         _diag("    4. In groups: the bot is in the chat and you @mention it, OR the chat allows bot-receive.")
+        _diag("  For forensic detail (every WS frame Feishu sends), Ctrl-C and rerun with:")
+        _diag("    FEISHU_CODEX_LARK_DEBUG=1 codex-lark setup")
 
     hint_task = asyncio.create_task(diagnostic_hint())
 
