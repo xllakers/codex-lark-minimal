@@ -91,6 +91,27 @@ def run_setup(config: Config) -> int:
             "FEISHU_CODEX_ALLOWED_CHATS": chats,
         })
         write_append_block(config_path, block)
+
+        allowlist_ok = bool(senders or chats)
+
+        if not allowlist_ok:
+            # Partial setup: credentials and workspaces written, but no
+            # allowlist. The daemon will start in dry-run (allowlist-empty ⇒
+            # dry-run by design). Skip the LaunchAgent prompt so the user
+            # doesn't end up with an autostarting daemon that silently
+            # ignores all messages, and tell them clearly what to do next.
+            print()
+            print("Wrote partial setup to %s (no allowlist captured)." % config_path)
+            print("Daemon would start in dry-run — it logs events but doesn't spawn Codex.")
+            print()
+            print("To go live, either:")
+            print("  - Re-run `codex-lark setup` (after fixing the discovery error if any)")
+            print("  - Run `codex-lark discover --json --handshake-token …` and feed the")
+            print("    result to `codex-lark configure --set FEISHU_CODEX_ALLOWED_SENDERS=…`")
+            print()
+            print("Verify partial state with: codex-lark doctor")
+            return 1
+
         print("Wrote setup block to %s" % config_path)
 
         if sys.platform == "darwin" and prompt_yes_no(
