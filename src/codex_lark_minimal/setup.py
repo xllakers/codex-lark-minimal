@@ -264,6 +264,49 @@ def _diag(msg: str) -> None:
     print(msg, file=sys.stderr, flush=True)
 
 
+_LARK_SECRET_SCRUB_INSTALLED = False
+
+
+def _install_lark_secret_scrub() -> None:
+    """Install a logging filter that masks app_secret in lark-oapi log lines.
+
+    lark-oapi at DEBUG level dumps full HTTP request bodies, which include
+    `{"app_id": "...", "app_secret": "..."}` — putting credentials in
+    plaintext logs that operators may paste into bug reports. The filter
+    rewrites the secret in-place before the message hits any handler.
+
+    Idempotent — installs once per process.
+    """
+    global _LARK_SECRET_SCRUB_INSTALLED
+    if _LARK_SECRET_SCRUB_INSTALLED:
+        return
+    import logging
+    import re
+
+    json_pat = re.compile(r'("app_secret"\s*:\s*)"[^"]*"')
+    py_pat = re.compile(r"('app_secret'\s*:\s*)'[^']*'")
+    kv_pat = re.compile(r"(\bapp_secret\s*=\s*)[^\s&'\"]+")
+
+    class _Scrub(logging.Filter):
+        def filter(self, record: "logging.LogRecord") -> bool:
+            try:
+                msg = record.getMessage()
+            except Exception:
+                return True
+            if "app_secret" not in msg:
+                return True
+            scrubbed = json_pat.sub(r'\1"***"', msg)
+            scrubbed = py_pat.sub(r"\1'***'", scrubbed)
+            scrubbed = kv_pat.sub(r"\1***", scrubbed)
+            if scrubbed != msg:
+                record.msg = scrubbed
+                record.args = None
+            return True
+
+    logging.getLogger("Lark").addFilter(_Scrub())
+    _LARK_SECRET_SCRUB_INSTALLED = True
+
+
 async def _listen_for_events(
     app_id: str,
     app_secret: str,
@@ -293,6 +336,11 @@ async def _listen_for_events(
     except ImportError as exc:
         raise RuntimeError("lark-oapi not installed: %s" % exc) from exc
 
+    # Always install a scrub filter on lark's logger — at DEBUG it dumps HTTP
+    # request bodies including app_secret in plaintext, and we don't want
+    # operators (or copy/paste of diagnostic output) to leak credentials.
+    _install_lark_secret_scrub()
+
     # Optional forensic mode: elevate lark-oapi's logger so every WS frame
     # ("receive message, payload: …" / "receive pong") is visible. Use this
     # when discovery times out and you need to tell whether Feishu is
@@ -313,6 +361,7 @@ async def _listen_for_events(
         # final effective level actually stays at DEBUG.
         channel_kwargs["log_level"] = LogLevel.DEBUG
         _diag("  FEISHU_CODEX_LARK_DEBUG=1 → lark logger at DEBUG; expect raw WS frames on stdout")
+        _diag("  (app_secret values are scrubbed from logs, but rotate creds if you share output)")
 
     channel = FeishuChannel(**channel_kwargs)
     events: List[Tuple[Any, str]] = []
