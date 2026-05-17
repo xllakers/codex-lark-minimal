@@ -217,12 +217,10 @@ def discover_identity(app_id: str, app_secret: str, domain: str) -> Optional[Tup
     print()
     print("Open Lark, invite the bot to a chat (or DM it), and send any message.")
     print("Listening up to %ds for the first event..." % DISCOVERY_TIMEOUT)
-    def warn(msg: str) -> None:
-        print("  channel warning: %s" % msg, flush=True)
-
+    print("(Diagnostic activity is printed to stderr below.)")
     try:
         events, _reply_test = asyncio.run(
-            _listen_for_events(app_id, app_secret, domain, on_warning=warn)
+            _listen_for_events(app_id, app_secret, domain)
         )
     except RuntimeError as exc:
         print("Discovery failed: %s" % redact(str(exc), max_chars=200))
@@ -261,13 +259,17 @@ def discover_identity(app_id: str, app_secret: str, domain: str) -> Optional[Tup
     return (meta.sender_id, "")
 
 
+def _diag(msg: str) -> None:
+    """Discovery diagnostic line — to stderr so it doesn't corrupt JSON stdout."""
+    print(msg, file=sys.stderr, flush=True)
+
+
 async def _listen_for_events(
     app_id: str,
     app_secret: str,
     domain: str,
     *,
     timeout: int = DISCOVERY_TIMEOUT,
-    on_warning: Optional[Any] = None,
     handshake_token: Optional[str] = None,
 ) -> Tuple[List[Tuple[Any, str]], Optional[Dict[str, Any]]]:
     """Return (events, reply_test_result).
@@ -281,6 +283,10 @@ async def _listen_for_events(
     ``im:message:send_as_bot`` permission during setup, not after deploy.
     reply_test_result is ``{"ok": True}`` on send success or
     ``{"ok": False, "error": "..."}`` on send failure.
+
+    Diagnostic lines (WS-connected, bot identity, each received event,
+    drops, post-30s checklist) go to stderr so the user can see what the
+    listener is doing — and so they stay out of the agent's JSON stdout.
     """
     try:
         from lark_oapi.channel import FeishuChannel
@@ -295,27 +301,31 @@ async def _listen_for_events(
     async def on_message(msg: Any) -> None:
         text = str(get_nested(msg, "content_text") or "")
         meta = event_meta(msg)
+        preview = text[:60].replace("\n", " ")
+        _diag(
+            "  received: sender=%s chat=%s text=%r"
+            % (meta.sender_id or "<missing>", meta.chat_id or "<missing>", preview)
+        )
         if not meta.sender_id or not meta.chat_id:
+            _diag("  → dropped (missing sender or chat id)")
             return
         if handshake_token is not None:
             if handshake_token not in text:
-                return  # ignore non-matching traffic in the chat
-            # Latch the first matching event; ignore subsequent matches.
+                _diag("  → dropped (handshake token %r not in text)" % handshake_token)
+                return
             if matched["meta"] is None:
                 events.clear()
                 events.append((meta, text))
                 matched["meta"] = meta
                 first_match.set()
             return
-        # No-handshake mode: rolling buffer of last N.
         if len(events) >= MAX_OBSERVED:
             events.pop(0)
         events.append((meta, text))
         first_match.set()
 
     async def on_error(err: Any) -> None:
-        if on_warning is not None:
-            on_warning(redact(str(err), max_chars=200))
+        _diag("  channel error: %s" % redact(str(err), max_chars=200))
 
     channel.on("message", on_message)
     channel.on("error", on_error)
@@ -324,6 +334,31 @@ async def _listen_for_events(
         await channel.start_background(timeout=15)
     except Exception as exc:
         raise RuntimeError("connect failed: %s" % redact(str(exc), max_chars=200)) from exc
+
+    # Surface bot identity so the user can verify which bot they're DMing.
+    bot = channel.bot_identity
+    if bot is not None:
+        _diag(
+            "  WS connected. Bot: open_id=%s name=%s"
+            % (getattr(bot, "open_id", None) or "?", getattr(bot, "name", None) or "?")
+        )
+    else:
+        _diag("  WS connected. (bot identity not yet resolved)")
+
+    async def diagnostic_hint() -> None:
+        await asyncio.sleep(30)
+        if first_match.is_set():
+            return
+        _diag(
+            "  no events yet (30s elapsed). If your message didn't show up "
+            "as 'received' above, verify:"
+        )
+        _diag("    1. The bot you DMed matches the open_id printed above.")
+        _diag("    2. Your app version is *published* (not draft) on open.feishu.cn / open.larksuite.com.")
+        _diag("    3. Event `im.message.receive_v1` is subscribed.")
+        _diag("    4. In groups: the bot is in the chat and you @mention it, OR the chat allows bot-receive.")
+
+    hint_task = asyncio.create_task(diagnostic_hint())
 
     try:
         try:
@@ -347,6 +382,11 @@ async def _listen_for_events(
             reply_result = {"ok": False, "error": redact(str(exc), max_chars=200)}
         return list(events), reply_result
     finally:
+        hint_task.cancel()
+        try:
+            await hint_task
+        except (asyncio.CancelledError, Exception):
+            pass
         try:
             await channel.disconnect()
         except Exception:
