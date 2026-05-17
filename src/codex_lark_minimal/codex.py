@@ -5,13 +5,15 @@ from __future__ import annotations
 import json
 import re
 import shlex
+import subprocess
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Set
 
 from codex_lark_minimal.config import Config
 from codex_lark_minimal.redaction import redact
 
 UUIDISH_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+ROLLOUT_RE = re.compile(r"-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$")
 
 
 def build_exec_command(config: Config, workspace: Path) -> List[str]:
@@ -164,6 +166,35 @@ def extract_interesting_text(value: Any) -> str:
 
     visit(value)
     return "\n".join(parts[-4:])
+
+
+def live_session_ids() -> Set[str]:
+    """Codex session IDs whose rollout-*.jsonl file is currently held open.
+
+    Codex's RolloutRecorder keeps the per-session rollout file open in write
+    mode for the lifetime of the session (openai/codex PR #17214). So a
+    session is "live" iff some `codex`-named process has the corresponding
+    file in its FD table. We ask `lsof` for that table and pull session_ids
+    out of the matching filenames. Hard-coded argv, no user input flows in.
+    """
+    try:
+        result = subprocess.run(
+            ["lsof", "-nP", "-Fn", "-c", "codex"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return set()
+    ids: Set[str] = set()
+    for line in result.stdout.splitlines():
+        if not line.startswith("n"):
+            continue
+        match = ROLLOUT_RE.search(line[1:])
+        if match:
+            ids.add(match.group(1))
+    return ids
 
 
 def recent_sessions(config: Config, limit: int = 8) -> List[Dict[str, str]]:

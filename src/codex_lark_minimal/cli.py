@@ -28,7 +28,7 @@ from codex_lark_minimal.codex import format_recent_sessions
 from codex_lark_minimal.config import ConfigError, ensure_dirs, load_config, validate_config
 from codex_lark_minimal.doctor import run_doctor
 from codex_lark_minimal.feishu import run_daemon_sync
-from codex_lark_minimal.state import StateStore, summarize_job, summarize_jobs
+from codex_lark_minimal.state import StateStore, summarize_job
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -123,15 +123,16 @@ def main(argv=None) -> int:
         return 0
 
     if args.command == "status":
-        store = StateStore(config)
         if args.run_id:
-            record = store.get(args.run_id)
+            record = StateStore(config).get(args.run_id)
             if record is None:
                 print("No bridge job found for run_id: %s" % args.run_id)
                 return 1
             print(summarize_job(record, include_tail=True))
-        else:
-            print(summarize_jobs(store.list(limit=10)))
+            return 0
+        # Same unified-list view as the Lark `codex status` reply, so CLI and
+        # chat report identical truth (5 latest Codex threads, live-state tagged).
+        print(BridgeController(config).status_summary())
         return 0
 
     if args.command == "stop":

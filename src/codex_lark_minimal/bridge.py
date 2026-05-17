@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-from codex_lark_minimal.codex import format_recent_sessions
+from codex_lark_minimal.codex import format_recent_sessions, live_session_ids, recent_sessions
 from codex_lark_minimal.commands import ParsedCommand, help_text, parse_message
 from codex_lark_minimal.config import Config, format_workspaces
 from codex_lark_minimal.redaction import redact
@@ -139,17 +139,49 @@ class BridgeController:
         return "Codex continuation started: %s (from %s)." % (record.run_id, run_id)
 
     def status_summary(self) -> str:
-        active = self.store.active_jobs()
-        recent = [item for item in self.store.list(limit=8) if item.status not in {"starting", "running"}][:5]
-        if not active and not recent:
-            return "No active or recent bridge jobs."
-        parts = []
-        if active:
-            parts.append("Active bridge jobs:\n" + summarize_jobs(active))
-        else:
-            parts.append("No active bridge jobs.")
-        if recent:
-            parts.append("Recent bridge jobs:\n" + summarize_jobs(recent))
+        """Latest 5 Codex threads regardless of origin.
+
+        Rows come from Codex's session index. Bridge-spawned threads render
+        with full bridge metadata (workspace, pid, exit, prompt preview);
+        threads started elsewhere render a single line tagged `[running]`
+        (rollout file held open by a codex process) or `[idle]`. Any active
+        bridge job whose session id hasn't reached Codex's index yet is
+        prepended so freshly-started work is never invisible.
+        """
+        threads = recent_sessions(self.config, limit=5)
+        live = live_session_ids()
+        # Map every bridge job's session_id → record (latest write wins, which
+        # `store.list()` already returns sorted newest-first).
+        bridge_by_session: dict = {}
+        for rec in self.store.list():
+            sid = rec.codex_session_id
+            if sid and sid not in bridge_by_session:
+                bridge_by_session[sid] = rec
+        thread_ids = {t["id"] for t in threads}
+        fresh_active = [
+            rec for rec in self.store.active_jobs()
+            if (rec.codex_session_id or "") not in thread_ids
+        ]
+        if not threads and not fresh_active:
+            return "No recent Codex threads found."
+        parts = ["Recent Codex threads (latest 5):"]
+        for rec in fresh_active:
+            parts.append(summarize_job(rec))
+        for thread in threads:
+            sid = thread["id"]
+            owned = bridge_by_session.get(sid)
+            if owned is not None:
+                parts.append(summarize_job(owned))
+            else:
+                tag = "running" if sid in live else "idle"
+                parts.append(
+                    "[%s] %s — %s, updated %s" % (
+                        tag,
+                        sid,
+                        thread["thread_name"] or "(no name)",
+                        thread["updated_at"] or "(unknown)",
+                    )
+                )
         return "\n\n".join(parts)
 
     def status_one(self, run_id: str) -> str:

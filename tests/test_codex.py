@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from codex_lark_minimal.codex import (
     build_exec_command,
     build_resume_command,
     event_tail_text,
     extract_session_id,
+    live_session_ids,
 )
 from codex_lark_minimal.config import Config
 
@@ -55,6 +58,47 @@ class CodexCommandShapeTests(unittest.TestCase):
         # resume positionals: session_id then "-" (stdin prompt) at the end.
         self.assertEqual(cmd[-2], "00000000-0000-4000-8000-000000000000")
         self.assertEqual(cmd[-1], "-")
+
+
+class LiveSessionIdsTests(unittest.TestCase):
+    def _lsof_output(self, *paths: str) -> str:
+        # `lsof -Fn -c codex` interleaves p/c/f/n lines. Only `n` lines (the
+        # filename field) carry rollout paths; everything else is ignored.
+        lines = ["p1234", "ccodex"]
+        for path in paths:
+            lines.append("n" + path)
+        return "\n".join(lines) + "\n"
+
+    def test_extracts_session_ids_from_rollout_paths(self):
+        base = "/Users/x/.codex/sessions/2026/05/17/rollout-2026-05-17T22-"
+        rollout_a = base + "09-55-019e3645-a73a-71f3-8063-7a9cfd4e26a1.jsonl"
+        rollout_b = base + "11-51-019e3647-6e9f-7a12-b86b-cbc92cf62e5e.jsonl"
+        result = mock.Mock(stdout=self._lsof_output(rollout_a, rollout_b, "/etc/passwd"))
+        with mock.patch("codex_lark_minimal.codex.subprocess.run", return_value=result):
+            ids = live_session_ids()
+        self.assertEqual(
+            ids,
+            {
+                "019e3645-a73a-71f3-8063-7a9cfd4e26a1",
+                "019e3647-6e9f-7a12-b86b-cbc92cf62e5e",
+            },
+        )
+
+    def test_returns_empty_when_lsof_missing(self):
+        with mock.patch("codex_lark_minimal.codex.subprocess.run", side_effect=FileNotFoundError):
+            self.assertEqual(live_session_ids(), set())
+
+    def test_returns_empty_when_lsof_times_out(self):
+        with mock.patch(
+            "codex_lark_minimal.codex.subprocess.run",
+            side_effect=subprocess.TimeoutExpired(cmd="lsof", timeout=2),
+        ):
+            self.assertEqual(live_session_ids(), set())
+
+    def test_ignores_non_rollout_filenames(self):
+        result = mock.Mock(stdout=self._lsof_output("/tmp/random.log", "/var/db/something.sqlite"))
+        with mock.patch("codex_lark_minimal.codex.subprocess.run", return_value=result):
+            self.assertEqual(live_session_ids(), set())
 
 
 if __name__ == "__main__":

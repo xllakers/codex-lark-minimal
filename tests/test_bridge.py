@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import tempfile
@@ -29,7 +30,16 @@ def config(tmp: str, *, dry_run: bool = True) -> Config:
         workspaces={"demo": Path(tmp)},
         default_workspace="demo",
         home=Path(tmp) / "home",
+        codex_home=Path(tmp) / "codex_home",
         config_path=Path(tmp) / "config.env",
+    )
+
+
+def write_codex_index(cfg: Config, rows: list) -> None:
+    cfg.codex_home.mkdir(parents=True, exist_ok=True)
+    (cfg.codex_home / "session_index.jsonl").write_text(
+        "\n".join(json.dumps(r) for r in rows) + "\n",
+        encoding="utf-8",
     )
 
 
@@ -156,6 +166,88 @@ class BridgeTests(unittest.TestCase):
                 EventMeta(chat_id="c", sender_id="s"),
             )
             self.assertIn("control characters", reply)
+
+    def test_status_unified_list_marks_live_and_idle(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = config(tmp)
+            live_id = "019e3645-a73a-71f3-8063-7a9cfd4e26a1"
+            idle_id = "019e3647-6e9f-7a12-b86b-cbc92cf62e5e"
+            write_codex_index(cfg, [
+                {"id": live_id, "thread_name": "live-thread", "updated_at": "2026-01-02T00:00:00"},
+                {"id": idle_id, "thread_name": "idle-thread", "updated_at": "2026-01-01T00:00:00"},
+            ])
+            controller = BridgeController(cfg, launcher=FakeLauncher())
+            with mock.patch("codex_lark_minimal.bridge.live_session_ids", return_value={live_id}):
+                reply = controller.status_summary()
+            self.assertIn("Recent Codex threads (latest 5):", reply)
+            self.assertIn("[running] " + live_id, reply)
+            self.assertIn("live-thread", reply)
+            self.assertIn("[idle] " + idle_id, reply)
+            self.assertIn("idle-thread", reply)
+
+    def test_status_unified_renders_bridge_metadata_for_owned_session(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = config(tmp)
+            owned = "019e3645-a73a-71f3-8063-7a9cfd4e26a1"
+            StateStore(cfg).write(
+                JobRecord(
+                    run_id="clk_owned",
+                    status="completed",
+                    workspace_alias="demo",
+                    workspace_path=tmp,
+                    prompt_sha256="abc",
+                    prompt_preview="bridge prompt preview",
+                    codex_session_id=owned,
+                    returncode=0,
+                )
+            )
+            write_codex_index(cfg, [
+                {"id": owned, "thread_name": "ignored-by-bridge-row", "updated_at": "2026-01-01"},
+            ])
+            controller = BridgeController(cfg, launcher=FakeLauncher())
+            with mock.patch("codex_lark_minimal.bridge.live_session_ids", return_value=set()):
+                reply = controller.status_summary()
+            # Bridge metadata wins for owned rows.
+            self.assertIn("[completed]", reply)
+            self.assertIn("clk_owned", reply)
+            self.assertIn("bridge prompt preview", reply)
+            # No standalone [idle] row for the same session — bridge view replaces it.
+            self.assertNotIn("[idle] " + owned, reply)
+
+    def test_status_unified_prepends_active_bridge_jobs_without_session_id(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = config(tmp)
+            # Active bridge job that hasn't captured a session_id yet.
+            StateStore(cfg).write(
+                JobRecord(
+                    run_id="clk_fresh",
+                    status="running",
+                    workspace_alias="demo",
+                    workspace_path=tmp,
+                    prompt_sha256="abc",
+                    prompt_preview="just started",
+                    pid=os.getpid(),
+                )
+            )
+            write_codex_index(cfg, [
+                {"id": "019e0000-0000-0000-0000-000000000000", "thread_name": "old", "updated_at": "2026"},
+            ])
+            controller = BridgeController(cfg, launcher=FakeLauncher())
+            with mock.patch("codex_lark_minimal.bridge.live_session_ids", return_value=set()):
+                reply = controller.status_summary()
+            # Fresh active job appears even though Codex's index doesn't have it.
+            self.assertIn("clk_fresh", reply)
+            self.assertIn("just started", reply)
+            # And the order: fresh-active row comes before the codex-index row.
+            self.assertLess(reply.index("clk_fresh"), reply.index("old"))
+
+    def test_status_unified_empty_when_no_threads_and_no_active(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = config(tmp)
+            controller = BridgeController(cfg, launcher=FakeLauncher())
+            with mock.patch("codex_lark_minimal.bridge.live_session_ids", return_value=set()):
+                reply = controller.status_summary()
+            self.assertEqual(reply, "No recent Codex threads found.")
 
     def test_launch_closes_log_handle_on_popen_error(self):
         """Popen raising must not leak the parent's log file handle."""
