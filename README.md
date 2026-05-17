@@ -34,6 +34,15 @@ See `AGENTS.md` for the full rules.
 
 ## Setup
 
+Two paths, same plumbing:
+
+- **You're installing this yourself.** Use the wizard below.
+- **You're asking an AI agent (Codex, Claude Code, …) to install it for you.**
+  Point the agent at [`INSTALL_WITH_AGENT.md`](INSTALL_WITH_AGENT.md) — it's
+  a short playbook that tells the agent what to ask you for vs. what to run
+  itself, using the same non-interactive `configure` / `discover` /
+  `doctor` commands the wizard uses under the hood.
+
 ### 1. Create a Feishu/Lark custom app
 
 1. Go to [open.feishu.cn](https://open.feishu.cn) (Feishu, mainland China) or
