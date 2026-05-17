@@ -8,6 +8,21 @@ import subprocess
 import sys
 from pathlib import Path
 
+# Pre-import lark_oapi.channel here, before any asyncio.run() can fire. The
+# transitive load of lark_oapi/ws/client.py contains a module-level
+# `loop = asyncio.get_event_loop()` — if that runs *inside* a running loop
+# (e.g. when the wizard or `discover` lazily imports it from within
+# `asyncio.run(...)`), lark captures our loop. WSClient.start() then runs in
+# an executor thread and calls `loop.run_until_complete(...)` on that same
+# (already-running) loop, raising "This event loop is already running".
+# Pre-importing at module load time gives lark its own fresh loop.
+try:
+    import lark_oapi.channel  # noqa: F401
+except ImportError:
+    # lark-oapi is a required dep; if it's missing the doctor / daemon will
+    # surface a clearer message at runtime.
+    pass
+
 from codex_lark_minimal.bridge import BridgeController, EventMeta
 from codex_lark_minimal.codex import format_recent_sessions
 from codex_lark_minimal.config import ConfigError, ensure_dirs, load_config, validate_config
