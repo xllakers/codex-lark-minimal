@@ -1,23 +1,26 @@
 """Interactive setup wizard.
 
-One command (`codex-lark setup`) walks the operator through:
+One command (`codex-lark setup`) prompts for *only* App ID + App Secret, then
+runs everything else with sensible defaults:
 
-  1. App ID / Secret / domain prompts, with a live token check.
-  2. Workspace alias=path prompt.
-  3. Long-connection "discovery" listener: capture inbound sender_id / chat_id
-     from your first test message, with no side effects (no Codex job runs).
-  4. Pick which observed identity to allowlist.
-  5. Append a marked block to config.env (atomic write, 600 perms preserved).
-  6. Optional LaunchAgent install on macOS.
+  1. Token check (fail fast on bad creds).
+  2. Domain auto-detected from existing config or defaulted to Feishu CN.
+  3. Long-connection discovery: auto-picks the first inbound event and
+     allowlists both sender_id and chat_id. No "pick a number" or
+     "sender/chat/both" prompts — single message in, allowlist out.
+  4. Appends a dated block to config.env (atomic write, 600 perms preserved).
+  5. Prints copy-paste commands for LaunchAgent install + workspace config —
+     does not run them itself.
 
-The wizard never spawns a worker; the discovery listener has no BridgeController
-attached. It exists purely to read identifiers off the wire.
+The wizard never spawns a worker; the discovery listener has no
+BridgeController attached. It exists purely to read identifiers off the wire.
 """
 
 from __future__ import annotations
 
 import asyncio
 import os
+import shutil
 import sys
 import tempfile
 from datetime import date
@@ -25,12 +28,7 @@ from getpass import getpass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from codex_lark_minimal.config import (
-    Config,
-    default_config_path,
-    normalize_domain,
-    parse_workspaces,
-)
+from codex_lark_minimal.config import Config, default_config_path
 from codex_lark_minimal.doctor import feishu_token_check
 from codex_lark_minimal.feishu import event_meta, get_nested
 from codex_lark_minimal.redaction import redact
@@ -56,76 +54,78 @@ def run_setup(config: Config) -> int:
 
     print()
     print("== codex-lark setup ==")
-    print("Press Ctrl-C any time to abort. Defaults shown in brackets.")
+    print("Asks for App ID + App Secret. Everything else has sensible defaults.")
+    print("Ctrl-C aborts without writing.")
     print()
 
     try:
-        app_id, app_secret, domain = prompt_credentials(config)
-        if app_id and app_secret:
-            # Token check before opening the long connection — fail fast.
-            ok, message = feishu_token_check_proxy(app_id, app_secret, domain)
-            print(("OK:   " if ok else "FAIL: ") + message)
-            if not ok:
-                print("Fix credentials and re-run `codex-lark setup`.")
-                return 2
-        else:
-            print("App ID / Secret skipped; discovery and real mode disabled.")
+        app_id, app_secret = prompt_credentials(config)
+        if not (app_id and app_secret):
+            print("App ID / App Secret are required. Aborting.")
+            return 2
 
-        workspaces_text = prompt_workspaces(config)
+        # Domain: keep existing if set, else default to Feishu CN. No prompt.
+        # International Lark users override post-setup with:
+        #   codex-lark configure --set FEISHU_DOMAIN=https://open.larksuite.com
+        domain = config.domain or "https://open.feishu.cn"
+
+        ok, message = feishu_token_check_proxy(app_id, app_secret, domain)
+        print(("OK:   " if ok else "FAIL: ") + message)
+        if not ok:
+            print("Fix credentials and re-run `codex-lark setup`.")
+            return 2
 
         senders, chats = "", ""
-        if app_id and app_secret and prompt_yes_no(
-            "Discover sender_id / chat_id by listening for one Lark message?",
-            default=True,
-        ):
-            picked = discover_identity(app_id, app_secret, domain)
-            if picked is not None:
-                senders, chats = picked
+        picked = discover_identity(app_id, app_secret, domain)
+        if picked is not None:
+            senders, chats = picked
+
+        # Capture absolute path now (operator's shell has full PATH);
+        # launchd's minimal PATH would fail at job-spawn otherwise.
+        codex_bin = ""
+        if not config.codex_bin or config.codex_bin == "codex":
+            resolved = shutil.which("codex")
+            if resolved:
+                codex_bin = resolved
+                print("Resolved codex CLI: %s" % resolved)
+            else:
+                print("WARNING: `codex` not on PATH. Set FEISHU_CODEX_CODEX_BIN later.")
 
         block = build_append_block({
-            "FEISHU_APP_ID": app_id or "",
-            "FEISHU_APP_SECRET": app_secret or "",
+            "FEISHU_APP_ID": app_id,
+            "FEISHU_APP_SECRET": app_secret,
             "FEISHU_DOMAIN": domain,
-            "FEISHU_CODEX_WORKSPACES": workspaces_text,
             "FEISHU_CODEX_ALLOWED_SENDERS": senders,
             "FEISHU_CODEX_ALLOWED_CHATS": chats,
+            "FEISHU_CODEX_CODEX_BIN": codex_bin,
         })
         write_append_block(config_path, block)
-
-        allowlist_ok = bool(senders or chats)
-
-        if not allowlist_ok:
-            # Partial setup: credentials and workspaces written, but no
-            # allowlist. The daemon will start in dry-run (allowlist-empty ⇒
-            # dry-run by design). Skip the LaunchAgent prompt so the user
-            # doesn't end up with an autostarting daemon that silently
-            # ignores all messages, and tell them clearly what to do next.
-            print()
-            print("Wrote partial setup to %s (no allowlist captured)." % config_path)
-            print("Daemon would start in dry-run — it logs events but doesn't spawn Codex.")
-            print()
-            print("To go live, either:")
-            print("  - Re-run `codex-lark setup` (after fixing the discovery error if any)")
-            print("  - Run `codex-lark discover --json --handshake-token …` and feed the")
-            print("    result to `codex-lark configure --set FEISHU_CODEX_ALLOWED_SENDERS=…`")
-            print()
-            print("Verify partial state with: codex-lark doctor")
-            return 1
-
         print("Wrote setup block to %s" % config_path)
 
-        if sys.platform == "darwin" and prompt_yes_no(
-            "Install macOS LaunchAgent for autostart?", default=False
-        ):
-            from codex_lark_minimal.cli import service_command
-
-            service_command(config, "install")
-            print("Run `codex-lark service start` when ready.")
-
+        allowlist_ok = bool(senders or chats)
         print()
-        print("Verify with:  codex-lark doctor")
-        print("Start with:   codex-lark daemon")
-        return 0
+        if allowlist_ok:
+            print("Setup complete. Next steps (copy-paste):")
+        else:
+            print("Setup wrote credentials but no allowlist (no message received).")
+            print("Daemon will start in dry-run until allowlist is populated.")
+            print("Re-run `codex-lark setup` and DM the bot during the discovery window,")
+            print("or run `codex-lark discover --handshake-token <token>` later.")
+            print()
+            print("Next steps once live:")
+        print("  codex-lark doctor                       # verify config")
+        if not config.workspaces:
+            print("  codex-lark configure \\                  # add a workspace (needed for")
+            print("    --set FEISHU_CODEX_WORKSPACES=myproj=/path/to/myproj")
+            print("                                          # `codex myproj: …` to spawn jobs)")
+        if sys.platform == "darwin":
+            print("  codex-lark service install              # macOS autostart (optional)")
+            print("  codex-lark service start                # start the daemon")
+        else:
+            print("  codex-lark daemon                       # start the daemon (foreground)")
+        print()
+        print("Then DM the bot `codex help` to verify end-to-end.")
+        return 0 if allowlist_ok else 1
     except KeyboardInterrupt:
         print()
         print("Aborted. Config not modified.")
@@ -149,54 +149,10 @@ def prompt_secret(label: str, *, default: str = "") -> str:
     return raw.strip() or default
 
 
-def prompt_yes_no(label: str, *, default: bool) -> bool:
-    suffix = " [Y/n]" if default else " [y/N]"
-    raw = input("%s%s: " % (label, suffix)).strip().lower()
-    if not raw:
-        return default
-    return raw[0] == "y"
-
-
-def prompt_credentials(config: Config) -> Tuple[Optional[str], Optional[str], str]:
+def prompt_credentials(config: Config) -> Tuple[Optional[str], Optional[str]]:
     app_id = prompt("Feishu/Lark App ID", default=config.app_id or "")
     app_secret = prompt_secret("Feishu/Lark App Secret", default=config.app_secret or "")
-    domain_default = config.domain or "https://open.feishu.cn"
-    choice = prompt(
-        "Domain — [f]eishu CN / [l]ark global / paste URL",
-        default="f" if "feishu" in domain_default else "l",
-    ).strip().lower()
-    if choice == "f":
-        domain = "https://open.feishu.cn"
-    elif choice == "l":
-        domain = "https://open.larksuite.com"
-    else:
-        domain = normalize_domain(choice)
-    return (app_id or None, app_secret or None, domain)
-
-
-def prompt_workspaces(config: Config) -> str:
-    if config.workspaces:
-        existing = ",".join("%s=%s" % (alias, path) for alias, path in config.workspaces.items())
-    else:
-        existing = ""
-    while True:
-        raw = prompt("Workspaces (comma-separated alias=path)", default=existing)
-        if not raw:
-            print("  At least one workspace required.")
-            continue
-        try:
-            parsed = parse_workspaces(raw)
-        except Exception as exc:
-            print("  Invalid: %s" % exc)
-            continue
-        missing = [p for p in parsed.values() if not p.is_dir()]
-        if missing:
-            print("  Warning: path(s) do not exist on disk:")
-            for p in missing:
-                print("    - %s" % p)
-            if not prompt_yes_no("  Save anyway?", default=False):
-                continue
-        return raw
+    return (app_id or None, app_secret or None)
 
 
 # ---------------------------------------------------------------------------
@@ -213,11 +169,18 @@ def feishu_token_check_proxy(app_id: str, app_secret: str, domain: str) -> Tuple
 
 
 def discover_identity(app_id: str, app_secret: str, domain: str) -> Optional[Tuple[str, str]]:
-    """Run a one-shot listener. Returns (senders_csv, chats_csv) or None."""
+    """Run a one-shot listener. Returns (senders_csv, chats_csv) or None.
+
+    Auto-picks the first inbound event and allowlists both sender and chat.
+    This is the right default for the most common case (operator DMing their
+    own bot during setup): the first message is the operator, and allowing
+    both sender+chat means later messages still match even if Feishu rotates
+    the chat_id for the same sender (rare but observed).
+    """
     print()
-    print("Open Lark, invite the bot to a chat (or DM it), and send any message.")
+    print("Now DM the bot from Feishu/Lark (any message, e.g. 'hi').")
     print("Listening up to %ds for the first event..." % DISCOVERY_TIMEOUT)
-    print("(Diagnostic activity is printed to stderr below.)")
+    print("(WS diagnostics print to stderr below.)")
     try:
         events, _reply_test = asyncio.run(
             _listen_for_events(app_id, app_secret, domain)
@@ -226,37 +189,22 @@ def discover_identity(app_id: str, app_secret: str, domain: str) -> Optional[Tup
         print("Discovery failed: %s" % redact(str(exc), max_chars=200))
         return None
     if not events:
-        print("No messages received. Checklist:")
-        print("  - App version published?")
-        print("  - Bot invited to the chat?")
-        print("  - im.message.receive_v1 event subscribed?")
+        print("No messages received within %ds." % DISCOVERY_TIMEOUT)
         return None
+    meta, text = events[0]
+    preview = redact(text, max_chars=60).replace("\n", " ")
     print()
-    print("Observed inbound events:")
-    for i, (meta, text) in enumerate(events, 1):
-        preview = redact(text, max_chars=60).replace("\n", " ")
-        print("  [%d] sender=%s chat=%s text=%r" % (i, meta.sender_id, meta.chat_id, preview))
-    while True:
-        raw = prompt("Pick number to add to allowlist (or 's' to skip)", default="1")
-        if raw.lower() == "s":
-            return None
-        try:
-            idx = int(raw)
-            if 1 <= idx <= len(events):
-                break
-        except ValueError:
-            pass
-        print("  Enter a number from 1 to %d, or 's'." % len(events))
-    meta, _ = events[idx - 1]
-    scope = prompt(
-        "Allowlist scope — [s]ender / [c]hat / [b]oth",
-        default="s",
-    ).strip().lower()
-    if scope.startswith("c"):
-        return ("", meta.chat_id)
-    if scope.startswith("b"):
-        return (meta.sender_id, meta.chat_id)
-    return (meta.sender_id, "")
+    print("Captured: sender=%s chat=%s text=%r" % (meta.sender_id, meta.chat_id, preview))
+    print("Added both to allowlist.")
+    if len(events) > 1:
+        # Multiple senders during the 180s window means a shared bot — we
+        # only allowlist the first. Surface this so the operator knows.
+        print(
+            "Note: %d other event(s) observed and ignored. Allowlist additional"
+            " senders later via `codex-lark configure --set"
+            " FEISHU_CODEX_ALLOWED_SENDERS=...`." % (len(events) - 1)
+        )
+    return (meta.sender_id, meta.chat_id)
 
 
 def _diag(msg: str) -> None:
@@ -546,6 +494,17 @@ async def _listen_for_events(
             await channel.disconnect()
         except Exception:
             pass
+        # lark-oapi's WSClient spawns ping/receive loops and an expiring-cache
+        # cron that disconnect() doesn't await. Without explicit cleanup,
+        # asyncio.run() prints "Task was destroyed but it is pending" on exit,
+        # which looks like setup failed. Cancel anything still alive in our
+        # loop and drain it so the wizard returns to the shell cleanly.
+        loop = asyncio.get_running_loop()
+        leftover = [t for t in asyncio.all_tasks(loop) if t is not asyncio.current_task()]
+        for task in leftover:
+            task.cancel()
+        if leftover:
+            await asyncio.gather(*leftover, return_exceptions=True)
 
 
 # ---------------------------------------------------------------------------

@@ -13,7 +13,10 @@ Ask these. Never guess.
 1. **App ID + App Secret.** The human creates a custom app at
    `open.feishu.cn` (CN) or `open.larksuite.com` (global) with: Bot capability;
    event `im.message.receive_v1` subscribed; long-connection event delivery;
-   `im:message` + `im:message:send_as_bot` permissions; app version published.
+   permissions `im:message.p2p_msg:readonly` (for receiving DMs) and
+   `im:message:send_as_bot` (for replying); availability scope includes the
+   human; app version **published** (not draft — Feishu enforces the released
+   version's settings, not the sidebar's).
 2. **Workspace `alias=path` pairs.** Only the human knows which directories
    the bot is allowed to drive.
 3. **One short message in Lark** containing a handshake token you'll generate.
@@ -142,6 +145,7 @@ Read the JSON. Shapes:
 | `{"ok": true, "reply_verified": true, "events": [{...}], ...}` | Receive + send both work | Continue to allowlist write below |
 | `{"ok": false, "error": "no events containing handshake token within 180s", ...}` | Human didn't send the message in time, or bot isn't in the chat | Verify Phase 1 prereqs (published, invited, permissions) and retry |
 | `{"ok": false, "error": "handshake matched but reply send failed: ...", "events": [...]}` | Got the message but can't reply — usually missing `im:message:send_as_bot` permission | Ask human to add the permission, republish the app version, and retry |
+| Discovery returns `{"events": []}` after a full timeout despite a published app + subscribed event | Receive scope is missing. Feishu requires `im:message.p2p_msg:readonly` separately from the event subscription for WS-delivered DMs | Ask human to add `im:message.p2p_msg:readonly`, republish, and retry |
 | `{"ok": false, "error": "connect failed: ...", ...}` | WS handshake failed — bad creds, network, or domain | Redo Phase 3 |
 
 On success, write the allowlist. Default to **sender-only** (only the human

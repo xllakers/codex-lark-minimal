@@ -26,11 +26,26 @@ async def run_daemon(config: Config) -> None:
     )
     controller = BridgeController(config)
 
+    prefix = config.trigger_prefix.strip().lower()
+
     async def on_message(msg: Any) -> None:
         meta = event_meta(msg)
         text = str(get_nested(msg, "content_text") or "")
         if not text:
             return
+        # Without this line the daemon is silent on receive and operators
+        # can't distinguish "WS dropped" from "message didn't match prefix."
+        matches_prefix = (not prefix) or text.strip().lower().startswith(prefix)
+        print(
+            "inbound: sender=%s chat=%s prefix=%s text=%r"
+            % (
+                meta.sender_id or "?",
+                meta.chat_id or "?",
+                "yes" if matches_prefix else "no",
+                redact(text, max_chars=80).replace("\n", " "),
+            ),
+            flush=True,
+        )
         try:
             reply = controller.handle_text(text, meta)
         except Exception as exc:  # Keep the transport alive and report a redacted failure.

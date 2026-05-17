@@ -22,6 +22,16 @@ def run_doctor(config: Config) -> Tuple[bool, str]:
     checks.append((import_ok("lark_oapi"), "lark-oapi importable"))
     codex_path = shutil.which(config.codex_bin)
     checks.append((bool(codex_path), "Codex CLI found (%s)" % (codex_path or config.codex_bin)))
+    # macOS-only: launchd's default PATH excludes nvm/asdf/homebrew. The
+    # doctor finds codex via your shell PATH, but the daemon won't. Pin an
+    # absolute path so this can't bite at job-spawn.
+    if sys.platform == "darwin" and codex_path and "/" not in config.codex_bin:
+        checks.append((
+            False,
+            "Codex CLI is referenced by basename %r — set FEISHU_CODEX_CODEX_BIN=%s "
+            "so the daemon under launchd (with minimal PATH) can find it."
+            % (config.codex_bin, codex_path),
+        ))
     if codex_path:
         ok, out = command_ok([config.codex_bin, "--version"])
         checks.append((ok, "Codex version: %s" % redact(out.strip(), max_chars=120)))

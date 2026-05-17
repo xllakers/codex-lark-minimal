@@ -32,31 +32,64 @@ See `AGENTS.md` for the full rules.
   (`codex --version` should work)
 - A Feishu or Lark account with permission to create a custom app
 
-## Setup
+## Quick start
 
-Two paths, same plumbing:
+Three things to do: configure the Feishu app, run the installer, start the
+daemon. Should take ~10 minutes.
 
-- **You're installing this yourself.** Use the wizard below.
-- **You're asking an AI agent (Codex, Claude Code, …) to install it for you.**
-  Point the agent at [`INSTALL_WITH_AGENT.md`](INSTALL_WITH_AGENT.md) — it's
-  a short playbook that tells the agent what to ask you for vs. what to run
-  itself, using the same non-interactive `configure` / `discover` /
-  `doctor` commands the wizard uses under the hood.
+> **Asking an AI agent (Codex, Claude Code, …) to install it for you?**
+> Skip this README and point the agent at
+> [`INSTALL_WITH_AGENT.md`](INSTALL_WITH_AGENT.md). It's a short playbook
+> covering what to ask the human for and what to run itself.
 
-### 1. Create a Feishu/Lark custom app
+### Step 1 — Create the Feishu app
 
-1. Go to [open.feishu.cn](https://open.feishu.cn) (Feishu, mainland China) or
-   [open.larksuite.com](https://open.larksuite.com) (Lark, global) and create
-   a **custom app** with **Bot** capability.
-2. Under **Events & Callbacks → Events**, add `im.message.receive_v1`.
-3. Choose **Long connection** as the event delivery method (this is what lets
-   the bridge work without a public IP / webhook tunnel).
-4. Under **Permissions**, grant the bot `im:message` and
-   `im:message:send_as_bot`.
-5. Publish a version and wait for approval. Copy the **App ID** and **App
-   Secret** — the wizard will ask for them.
+Go to [open.feishu.cn](https://open.feishu.cn) (mainland China) or
+[open.larksuite.com](https://open.larksuite.com) (global), click
+**Console → Create Custom App**, give it a name, and enable the **Bot**
+capability under **App Capabilities → Bot**.
 
-### 2. Run the installer
+Then do three things in the dev console. Each is one panel and one screenshot.
+
+#### 1a. Add three permissions
+
+![Permissions panel](docs/screenshots/01-permissions.jpg)
+
+1. Sidebar → **权限管理** (Permissions).
+2. Click **开通权限** (Enable permission).
+3. Add and enable these three (search by ID):
+
+   | Permission ID | Why |
+   |---|---|
+   | `im:message.p2p_msg:readonly` | **Receive DMs.** Without this, events are subscribed but never delivered — the #1 cause of "WS connects, no events arrive." |
+   | `im:message:send_as_bot` | **Send replies.** |
+   | `im:message.group_at_msg:readonly` | *Optional* — group `@bot` support. |
+
+#### 1b. Subscribe to the message event
+
+![Event subscription panel](docs/screenshots/02-events.jpg)
+
+1. Sidebar → **事件与回调** (Events & Callbacks).
+2. Open the **事件配置** (Event Configuration) tab.
+3. Set **订阅方式** (Delivery method) to **长连接** (Long connection).
+4. Click **添加事件** (Add event) and add `im.message.receive_v1`.
+
+#### 1c. Publish a version
+
+![Release panel](docs/screenshots/03-release.jpg)
+
+1. Sidebar → **版本管理与发布** (App Release).
+2. Scroll to the bottom and click **保存** (Save and publish).
+
+> ⚠️ **The bridge only sees the *released* version's settings.** Sidebar
+> changes don't take effect until you publish a new version. After any
+> change to permissions, events, or availability, re-publish.
+
+Finally, copy **App ID** and **App Secret** from **凭证与基础信息**
+(Credentials & Basic Info). The wizard asks for these two values and
+nothing else.
+
+### Step 2 — Run the installer
 
 ```bash
 git clone https://github.com/xllakers/codex-lark-minimal.git
@@ -64,57 +97,56 @@ cd codex-lark-minimal
 ./install.sh
 ```
 
-The installer creates an isolated venv at `~/.codex/bridges/codex-lark-minimal/`,
-opportunistically symlinks `codex-lark` into `~/.local/bin` if that's on your
-PATH, and then launches the **setup wizard** which:
+The installer creates an isolated venv at `~/.codex/bridges/codex-lark-minimal/`
+and launches the **setup wizard**. The wizard:
 
-1. Prompts for App ID / Secret / Lark domain and validates the credentials
-   against Feishu's auth endpoint.
-2. Prompts for workspace `alias=path` pairs.
-3. Opens a one-shot long connection. **Send any message to your bot from the
-   target chat** — the wizard prints the observed `sender_id` / `chat_id` and
-   asks which to add to the allowlist.
-4. Writes the chosen values to `config.env` as a dated `# --- codex-lark setup
-   YYYY-MM-DD ---` block (`chmod 600` preserved, existing values kept).
-5. Optionally installs the macOS LaunchAgent.
+1. Prompts only for App ID + App Secret (the two values from Step 1).
+2. Validates them against Feishu's auth endpoint.
+3. Opens a long connection and waits up to 180s. **DM your bot any
+   message** — the wizard captures it and allowlists you automatically.
+4. Writes everything to `config.env` (`chmod 600`).
 
-That's it. Verify and start:
+### Step 3 — Start the daemon
 
 ```bash
-codex-lark doctor
-codex-lark daemon
+codex-lark doctor                # verify config
+codex-lark service install       # macOS LaunchAgent
+codex-lark service start         # start the daemon
 ```
 
-(If `~/.local/bin` isn't on your PATH, the installer prints an alias line you
-can paste into your shell rc — or use the full path
-`~/.codex/bridges/codex-lark-minimal/run.sh`.)
+On Linux, run `codex-lark daemon` under systemd/tmux instead. Verify
+end-to-end by DMing the bot:
 
-### Re-run the wizard or skip it
+```
+codex help
+```
 
-- Run `codex-lark setup` again any time — defaults are pre-filled from the
-  current config and a new dated block is appended.
-- `./install.sh --no-setup` installs the bridge without launching the wizard;
-  edit `config.env` by hand and run `codex-lark doctor` when ready.
+The bot should reply with the command list within a second.
+
+To start spawning real Codex jobs, register a workspace:
+
+```bash
+codex-lark configure --set FEISHU_CODEX_WORKSPACES=myproj=/path/to/myproj
+```
+
+Then DM `codex myproj: <your task>`. Sessions land in `~/.codex/sessions/` —
+resumable from the Codex CLI's `resume` picker or with `codex exec resume <id>`.
+
+---
+
+### Re-run / skip the wizard
+
+- `codex-lark setup` again — defaults pre-fill from current config.
+- `./install.sh --no-setup` — install without the wizard; edit `config.env`
+  by hand, then `codex-lark doctor`.
 
 ### Dry-run vs real mode
 
-The mode is **derived from the allowlist**: an empty
-`FEISHU_CODEX_ALLOWED_SENDERS` and `FEISHU_CODEX_ALLOWED_CHATS` keeps the
-daemon in dry-run automatically (the bridge logs events but never launches
-Codex). Populate either to go live. Set `FEISHU_CODEX_DRY_RUN=1` explicitly
-to force dry-run while keeping a populated allowlist (useful for staging).
-
-### macOS autostart (optional)
-
-```bash
-codex-lark service install
-codex-lark service start
-codex-lark service status
-```
-
-Stop with `service stop`. On Linux, run `codex-lark daemon` under your usual
-supervisor (systemd user unit, tmux, etc.) — the script is a plain long-lived
-process.
+Mode is **derived from the allowlist**: empty `FEISHU_CODEX_ALLOWED_SENDERS`
+and `FEISHU_CODEX_ALLOWED_CHATS` keeps the daemon in dry-run automatically
+(events log, no Codex spawn). Populate either to go live. Set
+`FEISHU_CODEX_DRY_RUN=1` to force dry-run with a populated allowlist
+(useful for staging).
 
 ## Lark commands
 
@@ -169,17 +201,28 @@ tail (see `src/codex_lark_minimal/redaction.py`).
 
 ## Troubleshooting
 
-- **`config error: real mode requires ...`** — the allowlist is non-empty (so
-  the bridge is in real mode) but `FEISHU_APP_ID` / `FEISHU_APP_SECRET` are
-  missing. Run `codex-lark setup` to fill them in, or clear the allowlist to
-  fall back to dry-run.
-- **Bot doesn't reply** — check that the app version is published, the
-  `im.message.receive_v1` event is added, and the bot has been invited to the
-  group. The doctor command can verify the token.
-- **Codex not found** — set `FEISHU_CODEX_CODEX_BIN` in `config.env` to the
-  absolute path of your `codex` binary.
-- **Persistent `lost` jobs** — a worker process died between writes. Safe to
-  ignore; the bridge will not restart them automatically (by design).
+- **WS connects but no events arrive.** `im:message.p2p_msg:readonly` is
+  missing from the *released* version (see Step 1a). The event subscription
+  alone isn't enough; Feishu requires the matching read scope for each chat
+  type.
+- **Bot doesn't reply.** Verify (1) the app's *released* version has the
+  three settings from Step 1, (2) `codex-lark doctor` reports green, (3)
+  `tail -f ~/.codex/bridges/codex-lark-minimal/logs/bridge.log` shows
+  `inbound: ... prefix=yes` when you DM. `prefix=no` means your message
+  didn't start with `codex` (the trigger word).
+- **Dry-run despite a populated allowlist.** Look for `FEISHU_CODEX_DRY_RUN=1`
+  in `config.env` — that overrides allowlist mode.
+- **`env: node: No such file or directory` in `status <run_id>`.** macOS
+  launchd has a minimal PATH. Re-run `codex-lark service install` from a
+  shell with `node` on PATH; the installer captures it into the LaunchAgent
+  plist.
+- **`Codex CLI is referenced by basename`** (doctor warning) — set
+  `FEISHU_CODEX_CODEX_BIN` to the absolute path the warning prints.
+- **`config error: real mode requires ...`** — `FEISHU_APP_ID` /
+  `FEISHU_APP_SECRET` missing while allowlist is set. Re-run `codex-lark
+  setup` or clear the allowlist.
+- **Persistent `lost` jobs** — a worker died between state writes. Safe to
+  ignore; the bridge does not auto-restart by design.
 
 ## Development
 
@@ -190,7 +233,7 @@ pip install -e ".[dev]"
 
 ruff check src/ tests/    # lint
 mypy                      # type check (lenient — strict is a separate effort)
-pytest -q                 # 26 tests, <1s
+pytest -q                 # ~50 tests, <1s
 ```
 
 `make test` runs pytest only. CI (GitHub Actions, `.github/workflows/test.yml`)

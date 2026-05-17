@@ -365,6 +365,11 @@ def service_command(config, action: str) -> int:
 
 
 def plist_text(label: str, run_sh: Path, log_path: Path) -> str:
+    # launchd's default PATH (/usr/bin:/bin:/usr/sbin:/sbin) lacks nvm / asdf
+    # / homebrew node bins. Codex CLI is a node script (#!/usr/bin/env node),
+    # so even an absolute path to `codex` fails at runtime without `node` on
+    # PATH. Capture the operator's PATH at install time to fix both lookups.
+    operator_path = os.environ.get("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
     return """<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
   "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -377,6 +382,11 @@ def plist_text(label: str, run_sh: Path, log_path: Path) -> str:
     <string>{run_sh}</string>
     <string>daemon</string>
   </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>{path}</string>
+  </dict>
   <key>RunAtLoad</key>
   <false/>
   <key>KeepAlive</key>
@@ -390,7 +400,7 @@ def plist_text(label: str, run_sh: Path, log_path: Path) -> str:
   <string>{log_path}</string>
 </dict>
 </plist>
-""".format(label=label, run_sh=run_sh, log_path=log_path)
+""".format(label=label, run_sh=run_sh, log_path=log_path, path=operator_path)
 
 
 if __name__ == "__main__":

@@ -15,39 +15,39 @@ UUIDISH_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA
 
 
 def build_exec_command(config: Config, workspace: Path) -> List[str]:
-    command = [
-        config.codex_bin,
-        "exec",
-        "--json",
-        "-C",
-        str(workspace),
-        "--sandbox",
-        config.codex_sandbox,
-        "--ask-for-approval",
-        config.codex_approval,
-        "--color",
-        "never",
-    ]
+    # codex 0.130+: --sandbox / --ask-for-approval / --model / --profile are
+    # top-level and must come BEFORE the `exec` subcommand. --color and -C
+    # belong to `exec`. Wrong order → "unexpected argument", exit 2.
+    command = [config.codex_bin]
+    command.extend(["--sandbox", config.codex_sandbox])
+    command.extend(["--ask-for-approval", config.codex_approval])
     if config.codex_model:
         command.extend(["--model", config.codex_model])
     if config.codex_profile:
         command.extend(["--profile", config.codex_profile])
+    command.extend([
+        "exec",
+        "--json",
+        "-C",
+        str(workspace),
+        "--color",
+        "never",
+    ])
     command.extend(config.codex_extra_args)
     command.append("-")
     return command
 
 
 def build_resume_command(config: Config, session_id: str) -> List[str]:
-    command = [
-        config.codex_bin,
-        "exec",
-        "resume",
-        "--json",
-        session_id,
-        "-",
-    ]
+    # Same flag-ordering rule as build_exec_command. Positionals
+    # (session_id, prompt-stdin) come last.
+    command = [config.codex_bin]
+    command.extend(["--sandbox", config.codex_sandbox])
+    command.extend(["--ask-for-approval", config.codex_approval])
+    command.extend(["exec", "resume", "--json"])
     if config.codex_model:
         command.extend(["--model", config.codex_model])
+    command.extend([session_id, "-"])
     return command
 
 
