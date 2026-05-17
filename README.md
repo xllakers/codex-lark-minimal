@@ -46,12 +46,19 @@ daemon. Should take ~10 minutes.
 
 Go to [open.feishu.cn](https://open.feishu.cn) (mainland China) or
 [open.larksuite.com](https://open.larksuite.com) (global), click
-**Console → Create Custom App**, give it a name, and enable the **Bot**
-capability under **App Capabilities → Bot**.
+**Console → Create Custom App**, and give it a name.
 
-Then do three things in the dev console. Each is one panel and one screenshot.
+Then do four things in the dev console. Each is one panel and one screenshot.
 
-#### 1a. Add three permissions
+#### 1a. Enable the Bot capability
+
+![Add app capability panel](docs/screenshots/00-enable-bot.jpg)
+
+1. Sidebar → **添加应用能力** (Add App Capabilities).
+2. Click the **机器人** (Bot) tile to add it. Without this the app exists
+   but can't send or receive messages.
+
+#### 1b. Add three permissions
 
 ![Permissions panel](docs/screenshots/01-permissions.jpg)
 
@@ -65,7 +72,7 @@ Then do three things in the dev console. Each is one panel and one screenshot.
    | `im:message:send_as_bot` | **Send replies.** |
    | `im:message.group_at_msg:readonly` | *Optional* — group `@bot` support. |
 
-#### 1b. Subscribe to the message event
+#### 1c. Subscribe to the message event
 
 ![Event subscription panel](docs/screenshots/02-events.jpg)
 
@@ -74,7 +81,7 @@ Then do three things in the dev console. Each is one panel and one screenshot.
 3. Set **订阅方式** (Delivery method) to **长连接** (Long connection).
 4. Click **添加事件** (Add event) and add `im.message.receive_v1`.
 
-#### 1c. Publish a version
+#### 1d. Publish a version
 
 ![Release panel](docs/screenshots/03-release.jpg)
 
