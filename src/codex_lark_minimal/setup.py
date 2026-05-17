@@ -23,7 +23,7 @@ import tempfile
 from datetime import date
 from getpass import getpass
 from pathlib import Path
-from typing import Any, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from codex_lark_minimal.config import (
     Config,
@@ -196,8 +196,13 @@ def discover_identity(app_id: str, app_secret: str, domain: str) -> Optional[Tup
     print()
     print("Open Lark, invite the bot to a chat (or DM it), and send any message.")
     print("Listening up to %ds for the first event..." % DISCOVERY_TIMEOUT)
+    def warn(msg: str) -> None:
+        print("  channel warning: %s" % msg, flush=True)
+
     try:
-        events = asyncio.run(_listen_for_events(app_id, app_secret, domain))
+        events, _reply_test = asyncio.run(
+            _listen_for_events(app_id, app_secret, domain, on_warning=warn)
+        )
     except RuntimeError as exc:
         print("Discovery failed: %s" % redact(str(exc), max_chars=200))
         return None
@@ -235,7 +240,27 @@ def discover_identity(app_id: str, app_secret: str, domain: str) -> Optional[Tup
     return (meta.sender_id, "")
 
 
-async def _listen_for_events(app_id: str, app_secret: str, domain: str) -> List[Tuple[Any, str]]:
+async def _listen_for_events(
+    app_id: str,
+    app_secret: str,
+    domain: str,
+    *,
+    timeout: int = DISCOVERY_TIMEOUT,
+    on_warning: Optional[Any] = None,
+    handshake_token: Optional[str] = None,
+) -> Tuple[List[Tuple[Any, str]], Optional[Dict[str, Any]]]:
+    """Return (events, reply_test_result).
+
+    Without ``handshake_token``: capture up to the last MAX_OBSERVED events
+    that arrive within ``timeout`` seconds. reply_test_result is ``None``.
+
+    With ``handshake_token``: only events whose text *contains* the token are
+    captured (so auto-pick is safe). On first match, we post a short
+    confirmation reply to the same chat — this validates the
+    ``im:message:send_as_bot`` permission during setup, not after deploy.
+    reply_test_result is ``{"ok": True}`` on send success or
+    ``{"ok": False, "error": "..."}`` on send failure.
+    """
     try:
         from lark_oapi.channel import FeishuChannel
     except ImportError as exc:
@@ -243,21 +268,33 @@ async def _listen_for_events(app_id: str, app_secret: str, domain: str) -> List[
 
     channel = FeishuChannel(app_id=app_id, app_secret=app_secret, domain=domain)
     events: List[Tuple[Any, str]] = []
-    first_event = asyncio.Event()
+    first_match = asyncio.Event()
+    matched: Dict[str, Any] = {"meta": None}
 
     async def on_message(msg: Any) -> None:
         text = str(get_nested(msg, "content_text") or "")
         meta = event_meta(msg)
         if not meta.sender_id or not meta.chat_id:
             return
+        if handshake_token is not None:
+            if handshake_token not in text:
+                return  # ignore non-matching traffic in the chat
+            # Latch the first matching event; ignore subsequent matches.
+            if matched["meta"] is None:
+                events.clear()
+                events.append((meta, text))
+                matched["meta"] = meta
+                first_match.set()
+            return
+        # No-handshake mode: rolling buffer of last N.
         if len(events) >= MAX_OBSERVED:
             events.pop(0)
         events.append((meta, text))
-        first_event.set()
+        first_match.set()
 
     async def on_error(err: Any) -> None:
-        # Surface but don't abort — discovery may still capture a valid event.
-        print("  channel warning: %s" % redact(str(err), max_chars=200), flush=True)
+        if on_warning is not None:
+            on_warning(redact(str(err), max_chars=200))
 
     channel.on("message", on_message)
     channel.on("error", on_error)
@@ -269,12 +306,25 @@ async def _listen_for_events(app_id: str, app_secret: str, domain: str) -> List[
 
     try:
         try:
-            await asyncio.wait_for(first_event.wait(), timeout=DISCOVERY_TIMEOUT)
+            await asyncio.wait_for(first_match.wait(), timeout=timeout)
         except asyncio.TimeoutError:
-            return []
-        # Brief grace window in case multiple messages arrived in quick succession.
-        await asyncio.sleep(GRACE_WINDOW)
-        return list(events)
+            return [], None
+
+        if handshake_token is None:
+            await asyncio.sleep(GRACE_WINDOW)
+            return list(events), None
+
+        # Handshake mode: bot replies in the chat to verify send permission.
+        chat_id = matched["meta"].chat_id
+        try:
+            await channel.send(
+                chat_id,
+                {"text": "codex-lark: setup token %s verified." % handshake_token},
+            )
+            reply_result: Dict[str, Any] = {"ok": True}
+        except Exception as exc:
+            reply_result = {"ok": False, "error": redact(str(exc), max_chars=200)}
+        return list(events), reply_result
     finally:
         try:
             await channel.disconnect()

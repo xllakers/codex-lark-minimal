@@ -26,6 +26,40 @@ def build_parser() -> argparse.ArgumentParser:
     subcommands.add_parser("recent")
     subcommands.add_parser("setup")
 
+    configure = subcommands.add_parser(
+        "configure",
+        help="Non-interactive config writer (intended for AI agents and scripts).",
+    )
+    configure.add_argument(
+        "--set",
+        action="append",
+        default=[],
+        dest="set_kv",
+        metavar="KEY=VALUE",
+        help="Set a config key. Repeatable. Avoid passing secrets here; use --stdin.",
+    )
+    configure.add_argument(
+        "--stdin",
+        action="store_true",
+        help="Read additional KEY=VALUE lines from stdin (one per line). Use for secrets.",
+    )
+
+    discover = subcommands.add_parser(
+        "discover",
+        help="One-shot listener: capture sender/chat IDs from the next inbound Lark message.",
+    )
+    discover.add_argument("--timeout", type=int, default=180)
+    discover.add_argument("--json", dest="as_json", action="store_true")
+    discover.add_argument(
+        "--handshake-token",
+        default=None,
+        help=(
+            "Only capture events whose text contains this token, and reply in-chat to "
+            "verify the bot's send permission. Use a short unguessable string and ask "
+            "the human to include it in their test message."
+        ),
+    )
+
     status = subcommands.add_parser("status")
     status.add_argument("run_id", nargs="?")
 
@@ -108,7 +142,181 @@ def main(argv=None) -> int:
     if args.command == "service":
         return service_command(config, args.service_command)
 
+    if args.command == "configure":
+        return configure_command(config, args.set_kv, args.stdin)
+
+    if args.command == "discover":
+        return discover_command(
+            config, args.timeout, args.as_json, handshake_token=args.handshake_token
+        )
+
     return 2
+
+
+# Suffixes that indicate a value must never be passed via --set (which lands
+# in the agent's tool-call log + shell history). Enforced by configure_command;
+# the agent is told to route these through --stdin instead.
+_SECRET_KEY_SUFFIXES = ("_SECRET", "_TOKEN", "_PASSWORD")
+
+
+def _is_secret_key(key: str) -> bool:
+    upper = key.upper()
+    return any(upper.endswith(suffix) for suffix in _SECRET_KEY_SUFFIXES)
+
+
+def configure_command(config, set_kv: list, from_stdin: bool) -> int:
+    pairs: dict = {}
+    for item in set_kv:
+        if "=" not in item:
+            print("--set requires KEY=VALUE: %s" % item, file=sys.stderr)
+            return 2
+        key, value = item.split("=", 1)
+        key = key.strip()
+        if _is_secret_key(key):
+            print(
+                "refusing --set for sensitive key %r — pass it via --stdin to keep "
+                "it out of tool-call logs and shell history." % key,
+                file=sys.stderr,
+            )
+            return 2
+        pairs[key] = value
+    if from_stdin:
+        for raw in sys.stdin:
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            pairs[key.strip()] = value.strip()
+    if not pairs:
+        print("No values to write.", file=sys.stderr)
+        return 1
+    # Fail fast on malformed workspaces so the agent doesn't write garbage and
+    # discover the error two phases later via the doctor.
+    if "FEISHU_CODEX_WORKSPACES" in pairs:
+        from codex_lark_minimal.config import parse_workspaces
+
+        try:
+            parse_workspaces(pairs["FEISHU_CODEX_WORKSPACES"])
+        except Exception as exc:
+            print("invalid FEISHU_CODEX_WORKSPACES: %s" % exc, file=sys.stderr)
+            return 2
+
+    # Domain auto-detect: if creds are being written but the domain isn't, probe
+    # Feishu CN and Lark global with the given credentials and adopt whichever
+    # authenticates. Eliminates one question for the agent ⇄ human exchange.
+    if (
+        "FEISHU_APP_ID" in pairs
+        and "FEISHU_APP_SECRET" in pairs
+        and "FEISHU_DOMAIN" not in pairs
+    ):
+        from codex_lark_minimal.setup import feishu_token_check_proxy
+
+        for candidate in ("https://open.feishu.cn", "https://open.larksuite.com"):
+            ok, _ = feishu_token_check_proxy(
+                pairs["FEISHU_APP_ID"], pairs["FEISHU_APP_SECRET"], candidate
+            )
+            if ok:
+                pairs["FEISHU_DOMAIN"] = candidate
+                print("Auto-detected domain: %s" % candidate)
+                break
+        else:
+            print(
+                "Could not auto-detect domain (both Feishu and Lark rejected the "
+                "credentials). Either set FEISHU_DOMAIN explicitly or re-check the "
+                "App ID / Secret.",
+                file=sys.stderr,
+            )
+
+    from codex_lark_minimal.config import default_config_path
+    from codex_lark_minimal.setup import build_append_block, write_append_block
+
+    config_path = config.config_path or default_config_path()
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    if not config_path.exists():
+        config_path.touch(mode=0o600)
+    write_append_block(config_path, build_append_block(pairs))
+    print("Wrote %d key(s) to %s" % (len(pairs), config_path))
+    return 0
+
+
+def discover_command(
+    config,
+    timeout: int,
+    as_json: bool,
+    *,
+    handshake_token: "str | None" = None,
+) -> int:
+    import asyncio
+    import json as _json
+
+    from codex_lark_minimal.redaction import redact
+    from codex_lark_minimal.setup import _listen_for_events
+
+    def emit_error(message: str, exit_code: int, *, events: "list | None" = None) -> int:
+        payload = {"ok": False, "error": message, "timeout_seconds": timeout}
+        if events is not None:
+            payload["events"] = events
+        if as_json:
+            print(_json.dumps(payload))
+        else:
+            print(message, file=sys.stderr)
+        return exit_code
+
+    if not config.app_id or not config.app_secret:
+        return emit_error(
+            "FEISHU_APP_ID and FEISHU_APP_SECRET required (run `codex-lark configure` first)",
+            2,
+        )
+
+    try:
+        events, reply_test = asyncio.run(
+            _listen_for_events(
+                config.app_id,
+                config.app_secret,
+                config.domain,
+                timeout=timeout,
+                handshake_token=handshake_token,
+            )
+        )
+    except RuntimeError as exc:
+        return emit_error(str(exc), 2)
+
+    if not events:
+        if handshake_token:
+            return emit_error(
+                "no events containing handshake token within %ds" % timeout, 1
+            )
+        return emit_error("no events received within %ds" % timeout, 1)
+
+    out_events = [
+        {
+            "sender_id": meta.sender_id,
+            "chat_id": meta.chat_id,
+            "text_preview": redact(text, max_chars=80),
+        }
+        for meta, text in events
+    ]
+
+    # Handshake mode: in-chat reply test result decides overall ok.
+    if handshake_token and reply_test is not None and not reply_test.get("ok"):
+        return emit_error(
+            "handshake matched but reply send failed: %s" % reply_test.get("error", ""),
+            2,
+            events=out_events,
+        )
+
+    if as_json:
+        payload = {"ok": True, "events": out_events, "timeout_seconds": timeout}
+        if handshake_token and reply_test and reply_test.get("ok"):
+            payload["reply_verified"] = True
+        print(_json.dumps(payload))
+        return 0
+    for i, (meta, text) in enumerate(events, 1):
+        preview = redact(text, max_chars=80).replace("\n", " ")
+        print("[%d] sender=%s chat=%s text=%r" % (i, meta.sender_id, meta.chat_id, preview))
+    if handshake_token and reply_test and reply_test.get("ok"):
+        print("Reply sent: setup connection verified.")
+    return 0
 
 
 def service_command(config, action: str) -> int:
