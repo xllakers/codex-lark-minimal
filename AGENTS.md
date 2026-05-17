@@ -14,7 +14,9 @@ and resuming trusted Codex jobs.
 - Lark-triggered work must use configured workspace aliases only; never accept
   arbitrary filesystem paths from chat.
 - Real daemon mode is default-deny: app credentials and a sender/chat allowlist
-  are required. `FEISHU_CODEX_ALLOW_ALL=1` is only for dry-run discovery.
+  are required. Empty allowlist ⇒ dry-run automatically (the bridge logs but
+  never spawns Codex). Use `codex-lark setup` (humans) or `codex-lark discover
+  --handshake-token …` (agents) to populate the allowlist safely.
 - Keep live mid-turn steering out of scope until Codex exposes a stable API for
   active-turn intervention.
 

@@ -46,9 +46,9 @@ addressed quickly when actionable.
 - Vulnerabilities in `lark-oapi`, Codex, or other dependencies — please
   report those to the upstream projects. We will pick up upstream fixes
   when they ship.
-- Findings only reproducible with `FEISHU_CODEX_DRY_RUN=1` +
-  `FEISHU_CODEX_ALLOW_ALL=1`. That combination is the documented
-  discovery-mode default and is not a trust boundary.
+- Findings only reproducible in dry-run mode (empty allowlist, or explicit
+  `FEISHU_CODEX_DRY_RUN=1`). Dry-run is the default-safe state — the bridge
+  logs events but never spawns Codex — and is not a trust boundary.
 - Issues that require the maintainer to ship attacker-controlled config
   (e.g. malicious `FEISHU_CODEX_WORKSPACES` values).
 

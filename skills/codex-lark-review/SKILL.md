@@ -18,8 +18,9 @@ Lead with findings, then verdict and required fixes.
 - Confirm no `config.env`, app secrets, Codex auth, tokens, logs, state files,
   raw prompts, raw Codex JSONL, `.venv/`, caches, or generated artifacts are
   added to git.
-- Confirm real daemon mode remains default-deny: credentials plus sender/chat
-  allowlist are required, and allow-all is only acceptable for dry-run discovery.
+- Confirm real daemon mode remains default-deny: credentials plus a non-empty
+  sender/chat allowlist are required. Empty allowlist ⇒ dry-run automatically;
+  there is no separate `ALLOW_ALL` knob.
 - Confirm chat input cannot select arbitrary filesystem paths; workspace aliases
   remain the execution boundary.
 - Confirm subprocess calls use argument lists, not shell interpolation, and raw
