@@ -24,7 +24,7 @@ except ImportError:
     pass
 
 from codex_lark_minimal.bridge import BridgeController, EventMeta
-from codex_lark_minimal.codex import format_recent_sessions
+from codex_lark_minimal.codex import find_session, format_codex_thread_status, format_recent_sessions
 from codex_lark_minimal.config import ConfigError, ensure_dirs, load_config, validate_config
 from codex_lark_minimal.doctor import run_doctor
 from codex_lark_minimal.feishu import run_daemon_sync
@@ -125,11 +125,15 @@ def main(argv=None) -> int:
     if args.command == "status":
         if args.run_id:
             record = StateStore(config).get(args.run_id)
-            if record is None:
-                print("No bridge job found for run_id: %s" % args.run_id)
-                return 1
-            print(summarize_job(record, include_tail=True))
-            return 0
+            if record is not None:
+                print(summarize_job(record, include_tail=True))
+                return 0
+            session = find_session(config, args.run_id)
+            if session is not None:
+                print(format_codex_thread_status(session))
+                return 0
+            print("No bridge run or Codex session matches: %s" % args.run_id)
+            return 1
         # Same unified-list view as the Lark `codex status` reply, so CLI and
         # chat report identical truth (5 latest Codex threads, live-state tagged).
         print(BridgeController(config).status_summary())

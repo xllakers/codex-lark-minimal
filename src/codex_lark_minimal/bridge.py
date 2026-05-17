@@ -9,7 +9,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-from codex_lark_minimal.codex import format_recent_sessions, live_session_ids, recent_sessions
+from codex_lark_minimal.codex import (
+    find_session,
+    format_codex_thread_status,
+    format_recent_sessions,
+    live_session_ids,
+    recent_sessions,
+)
 from codex_lark_minimal.commands import ParsedCommand, help_text, parse_message
 from codex_lark_minimal.config import Config, format_workspaces
 from codex_lark_minimal.redaction import redact
@@ -186,9 +192,14 @@ class BridgeController:
 
     def status_one(self, run_id: str) -> str:
         record = self.store.get(run_id)
-        if record is None:
-            return "No bridge job found for run_id: %s" % run_id
-        return summarize_job(record, include_tail=True)
+        if record is not None:
+            return summarize_job(record, include_tail=True)
+        # Fall back to Codex's session index: the argument may be a Codex
+        # session_id for a thread the bridge didn't spawn (CLI, IDE, ...).
+        session = find_session(self.config, run_id)
+        if session is not None:
+            return format_codex_thread_status(session)
+        return "No bridge run or Codex session matches: %s" % run_id
 
     def stop_job(self, run_id: str) -> str:
         try:

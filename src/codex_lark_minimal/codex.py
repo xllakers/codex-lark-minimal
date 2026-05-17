@@ -197,7 +197,7 @@ def live_session_ids() -> Set[str]:
     return ids
 
 
-def recent_sessions(config: Config, limit: int = 8) -> List[Dict[str, str]]:
+def _all_sessions(config: Config) -> List[Dict[str, str]]:
     index = config.codex_home / "session_index.jsonl"
     if not index.exists():
         return []
@@ -219,7 +219,18 @@ def recent_sessions(config: Config, limit: int = 8) -> List[Dict[str, str]]:
                 "updated_at": str(data.get("updated_at") or ""),
             }
         )
-    return rows[-limit:][::-1]
+    return rows
+
+
+def recent_sessions(config: Config, limit: int = 8) -> List[Dict[str, str]]:
+    return _all_sessions(config)[-limit:][::-1]
+
+
+def find_session(config: Config, session_id: str) -> Optional[Dict[str, str]]:
+    for row in _all_sessions(config):
+        if row["id"] == session_id:
+            return row
+    return None
 
 
 def format_recent_sessions(config: Config, limit: int = 8) -> str:
@@ -230,3 +241,18 @@ def format_recent_sessions(config: Config, limit: int = 8) -> str:
     for row in rows:
         lines.append("- %s %s %s" % (row["id"], row["updated_at"], row["thread_name"]))
     return "\n".join(lines)
+
+
+def format_codex_thread_status(session: Dict[str, str]) -> str:
+    return (
+        "Codex thread %s (not bridge-owned)\n"
+        "thread: %s\n"
+        "updated: %s\n"
+        "No captured output tail — the bridge doesn't store output for "
+        "threads it didn't spawn. Resume locally with: codex exec resume %s"
+    ) % (
+        session["id"],
+        session["thread_name"] or "(none)",
+        session["updated_at"] or "(unknown)",
+        session["id"],
+    )
