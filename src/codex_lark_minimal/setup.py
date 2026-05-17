@@ -297,13 +297,24 @@ async def _listen_for_events(
     # ("receive message, payload: …" / "receive pong") is visible. Use this
     # when discovery times out and you need to tell whether Feishu is
     # delivering anything to this subscription. Default off — noisy.
+    channel_kwargs: Dict[str, Any] = {
+        "app_id": app_id,
+        "app_secret": app_secret,
+        "domain": domain,
+    }
     if os.environ.get("FEISHU_CODEX_LARK_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}:
         import logging
 
+        from lark_oapi.core.enum import LogLevel
+
         logging.getLogger("Lark").setLevel(logging.DEBUG)
+        # WSClient.__init__ resets the lark logger to its own log_level argument,
+        # overriding the setLevel above. Pass log_level=DEBUG through so the
+        # final effective level actually stays at DEBUG.
+        channel_kwargs["log_level"] = LogLevel.DEBUG
         _diag("  FEISHU_CODEX_LARK_DEBUG=1 → lark logger at DEBUG; expect raw WS frames on stdout")
 
-    channel = FeishuChannel(app_id=app_id, app_secret=app_secret, domain=domain)
+    channel = FeishuChannel(**channel_kwargs)
     events: List[Tuple[Any, str]] = []
     first_match = asyncio.Event()
     matched: Dict[str, Any] = {"meta": None}
