@@ -167,6 +167,52 @@ class BridgeTests(unittest.TestCase):
             )
             self.assertIn("control characters", reply)
 
+    def test_status_one_falls_back_to_codex_session_id(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = config(tmp)
+            session_id = "019e2ead-c907-7a13-8db8-2c9c14ca3e1b"
+            write_codex_index(cfg, [
+                {"id": session_id, "thread_name": "cli-thread", "updated_at": "2026-01-01"},
+            ])
+            controller = BridgeController(cfg, launcher=FakeLauncher())
+            reply = controller.status_one(session_id)
+            self.assertIn("Codex thread %s" % session_id, reply)
+            self.assertIn("cli-thread", reply)
+            self.assertIn("not bridge-owned", reply)
+
+    def test_status_one_reports_no_match_for_unknown_id(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = config(tmp)
+            controller = BridgeController(cfg, launcher=FakeLauncher())
+            reply = controller.status_one("nope")
+            self.assertIn("No bridge run or Codex session matches", reply)
+            self.assertIn("nope", reply)
+
+    def test_status_one_prefers_bridge_record_over_codex_index(self):
+        # If the same id exists in both stores (shouldn't happen — bridge
+        # run_ids and Codex session_ids have different shapes — but the
+        # bridge record wins anyway because it has more information).
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = config(tmp)
+            shared = "clk_shared"
+            StateStore(cfg).write(
+                JobRecord(
+                    run_id=shared,
+                    status="completed",
+                    workspace_alias="demo",
+                    workspace_path=tmp,
+                    prompt_sha256="abc",
+                    prompt_preview="hi",
+                )
+            )
+            write_codex_index(cfg, [
+                {"id": shared, "thread_name": "shouldnt-show", "updated_at": "2026"},
+            ])
+            controller = BridgeController(cfg, launcher=FakeLauncher())
+            reply = controller.status_one(shared)
+            self.assertIn("[completed]", reply)
+            self.assertNotIn("shouldnt-show", reply)
+
     def test_status_unified_list_marks_live_and_idle(self):
         with tempfile.TemporaryDirectory() as tmp:
             cfg = config(tmp)

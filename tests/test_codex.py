@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -11,6 +12,8 @@ from codex_lark_minimal.codex import (
     build_resume_command,
     event_tail_text,
     extract_session_id,
+    find_session,
+    format_codex_thread_status,
     live_session_ids,
 )
 from codex_lark_minimal.config import Config
@@ -99,6 +102,34 @@ class LiveSessionIdsTests(unittest.TestCase):
         result = mock.Mock(stdout=self._lsof_output("/tmp/random.log", "/var/db/something.sqlite"))
         with mock.patch("codex_lark_minimal.codex.subprocess.run", return_value=result):
             self.assertEqual(live_session_ids(), set())
+
+
+class FindSessionTests(unittest.TestCase):
+    def test_returns_row_for_matching_id(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            (home / "session_index.jsonl").write_text(
+                json.dumps({"id": "a", "thread_name": "alpha", "updated_at": "t1"}) + "\n"
+                + json.dumps({"id": "b", "thread_name": "beta", "updated_at": "t2"}) + "\n",
+                encoding="utf-8",
+            )
+            cfg = Config(app_id=None, app_secret=None, codex_home=home)
+            row = find_session(cfg, "b")
+            self.assertIsNotNone(row)
+            assert row is not None
+            self.assertEqual(row["thread_name"], "beta")
+
+    def test_returns_none_when_index_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(app_id=None, app_secret=None, codex_home=Path(tmp))
+            self.assertIsNone(find_session(cfg, "anything"))
+
+    def test_format_codex_thread_status_handles_missing_fields(self):
+        rendered = format_codex_thread_status({"id": "abc", "thread_name": "", "updated_at": ""})
+        self.assertIn("Codex thread abc", rendered)
+        self.assertIn("(none)", rendered)
+        self.assertIn("(unknown)", rendered)
+        self.assertIn("codex exec resume abc", rendered)
 
 
 if __name__ == "__main__":
