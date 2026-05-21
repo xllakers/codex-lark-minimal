@@ -98,7 +98,7 @@ def help_text(config: Config) -> str:
             "%s help" % prefix,
             "%s workspaces" % prefix,
             "%s status" % prefix,
-            "%s status <run_id>" % prefix,
+            "%s status <run_id | session_id | thread name>" % prefix,
             "%s stop <run_id>" % prefix,
             "%s continue <run_id>: <instruction>" % prefix,
             "%s recent" % prefix,

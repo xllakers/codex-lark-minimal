@@ -176,9 +176,37 @@ class BridgeTests(unittest.TestCase):
             ])
             controller = BridgeController(cfg, launcher=FakeLauncher())
             reply = controller.status_one(session_id)
-            self.assertIn("Codex thread %s" % session_id, reply)
+            self.assertIn(session_id, reply)
             self.assertIn("cli-thread", reply)
             self.assertIn("not bridge-owned", reply)
+
+    def test_status_one_resolves_thread_by_name(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = config(tmp)
+            sid = "019e1651-b8cc-7f13-a96d-e569b7ede3a0"
+            write_codex_index(cfg, [
+                {"id": sid, "thread_name": "improve arbiter", "updated_at": "2026-05-14T23:27:48Z"},
+            ])
+            controller = BridgeController(cfg, launcher=FakeLauncher())
+            reply = controller.status_one("improve arbiter")
+            self.assertIn("improve arbiter", reply)
+            self.assertIn(sid, reply)
+
+    def test_status_one_lists_candidates_when_ambiguous(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = config(tmp)
+            write_codex_index(cfg, [
+                {"id": "019e0000-aaaa", "thread_name": "Inspect Arbiter pipeline", "updated_at": "t1"},
+                {"id": "019e0000-bbbb", "thread_name": "improve arbiter", "updated_at": "t2"},
+                {"id": "019e0000-cccc", "thread_name": "Review arbiter RFT pipeline", "updated_at": "t3"},
+            ])
+            controller = BridgeController(cfg, launcher=FakeLauncher())
+            with mock.patch("codex_lark_minimal.bridge.live_session_ids", return_value=set()):
+                reply = controller.status_one("arbiter")
+            self.assertIn("Multiple Codex threads match", reply)
+            self.assertIn("improve arbiter", reply)
+            self.assertIn("Review arbiter RFT pipeline", reply)
+            self.assertIn("Inspect Arbiter pipeline", reply)
 
     def test_status_one_reports_no_match_for_unknown_id(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -225,11 +253,14 @@ class BridgeTests(unittest.TestCase):
             controller = BridgeController(cfg, launcher=FakeLauncher())
             with mock.patch("codex_lark_minimal.bridge.live_session_ids", return_value={live_id}):
                 reply = controller.status_summary()
-            self.assertIn("Recent Codex threads (latest 5):", reply)
-            self.assertIn("[running] " + live_id, reply)
-            self.assertIn("live-thread", reply)
-            self.assertIn("[idle] " + idle_id, reply)
-            self.assertIn("idle-thread", reply)
+            self.assertIn("Codex threads:", reply)
+            # Compact rows show name + short-id, not the full UUID.
+            self.assertIn("[running] live-thread", reply)
+            self.assertIn(live_id.split("-", 1)[0], reply)
+            self.assertIn("[idle] idle-thread", reply)
+            self.assertIn(idle_id.split("-", 1)[0], reply)
+            # Raw ISO timestamps are not surfaced in the new format.
+            self.assertNotIn("2026-01-02T00:00:00", reply)
 
     def test_status_unified_renders_bridge_metadata_for_owned_session(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -258,7 +289,7 @@ class BridgeTests(unittest.TestCase):
             self.assertIn("clk_owned", reply)
             self.assertIn("bridge prompt preview", reply)
             # No standalone [idle] row for the same session — bridge view replaces it.
-            self.assertNotIn("[idle] " + owned, reply)
+            self.assertNotIn("ignored-by-bridge-row", reply)
 
     def test_status_unified_prepends_active_bridge_jobs_without_session_id(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -286,6 +317,30 @@ class BridgeTests(unittest.TestCase):
             self.assertIn("just started", reply)
             # And the order: fresh-active row comes before the codex-index row.
             self.assertLess(reply.index("clk_fresh"), reply.index("old"))
+
+    def test_status_surfaces_live_thread_outside_latest_five(self):
+        """A live thread whose updated_at is stale must still show up."""
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = config(tmp)
+            stale_live = "019e1651-b8cc-7f13-a96d-e569b7ede3a0"
+            rows = [
+                {"id": stale_live, "thread_name": "improve arbiter", "updated_at": "2026-01-01T00:00:00"},
+            ]
+            # Pad with six newer entries so `stale_live` falls outside the latest 5.
+            for i in range(6):
+                rows.append({
+                    "id": "019e0000-0000-0000-0000-00000000000%d" % i,
+                    "thread_name": "newer-%d" % i,
+                    "updated_at": "2026-05-1%d" % i,
+                })
+            write_codex_index(cfg, rows)
+            controller = BridgeController(cfg, launcher=FakeLauncher())
+            with mock.patch("codex_lark_minimal.bridge.live_session_ids", return_value={stale_live}):
+                reply = controller.status_summary()
+            self.assertIn("improve arbiter", reply)
+            self.assertIn("[running]", reply)
+            # And it appears before the latest-5 block (live extras come first).
+            self.assertLess(reply.index("improve arbiter"), reply.index("newer-5"))
 
     def test_status_unified_empty_when_no_threads_and_no_active(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -13,8 +13,11 @@ from codex_lark_minimal.codex import (
     find_session,
     format_codex_thread_status,
     format_recent_sessions,
+    format_thread_row,
+    humanize_time,
     live_session_ids,
     recent_sessions,
+    resolve_session,
 )
 from codex_lark_minimal.commands import ParsedCommand, help_text, parse_message
 from codex_lark_minimal.config import Config, format_workspaces
@@ -145,14 +148,15 @@ class BridgeController:
         return "Codex continuation started: %s (from %s)." % (record.run_id, run_id)
 
     def status_summary(self) -> str:
-        """Latest 5 Codex threads regardless of origin.
+        """Latest 5 Codex threads plus any live thread that fell outside that window.
 
         Rows come from Codex's session index. Bridge-spawned threads render
-        with full bridge metadata (workspace, pid, exit, prompt preview);
-        threads started elsewhere render a single line tagged `[running]`
-        (rollout file held open by a codex process) or `[idle]`. Any active
-        bridge job whose session id hasn't reached Codex's index yet is
-        prepended so freshly-started work is never invisible.
+        with bridge metadata (run_id, workspace, exit, prompt preview); threads
+        started elsewhere render as `[running] name · time · short-id` or
+        `[idle] …`. Live threads whose `updated_at` is older than the latest 5
+        (e.g. a long-running session that hasn't logged in a while) are
+        surfaced explicitly so they aren't invisible. Active bridge jobs that
+        haven't captured a session id yet are prepended for the same reason.
         """
         threads = recent_sessions(self.config, limit=5)
         live = live_session_ids()
@@ -164,41 +168,64 @@ class BridgeController:
             if sid and sid not in bridge_by_session:
                 bridge_by_session[sid] = rec
         thread_ids = {t["id"] for t in threads}
+        # Live threads that didn't make the latest-5 cut — without this they
+        # silently disappear. find_session walks the full index for metadata;
+        # fall back to a placeholder if even that misses (rare: live but not
+        # yet flushed to session_index.jsonl).
+        live_extras: list = []
+        for sid in sorted(live - thread_ids):
+            extra = find_session(self.config, sid) or {"id": sid, "thread_name": "", "updated_at": ""}
+            live_extras.append(extra)
+            thread_ids.add(sid)
         fresh_active = [
             rec for rec in self.store.active_jobs()
             if (rec.codex_session_id or "") not in thread_ids
         ]
-        if not threads and not fresh_active:
+        if not threads and not fresh_active and not live_extras:
             return "No recent Codex threads found."
-        parts = ["Recent Codex threads (latest 5):"]
+        parts = ["Codex threads:"]
         for rec in fresh_active:
-            parts.append(summarize_job(rec))
+            parts.append(self._compact_bridge_row(rec))
+        for thread in live_extras:
+            parts.append(format_thread_row(thread, "running"))
         for thread in threads:
             sid = thread["id"]
             owned = bridge_by_session.get(sid)
             if owned is not None:
-                parts.append(summarize_job(owned))
+                parts.append(self._compact_bridge_row(owned))
             else:
                 tag = "running" if sid in live else "idle"
-                parts.append(
-                    "[%s] %s — %s, updated %s" % (
-                        tag,
-                        sid,
-                        thread["thread_name"] or "(no name)",
-                        thread["updated_at"] or "(unknown)",
-                    )
-                )
-        return "\n\n".join(parts)
+                parts.append(format_thread_row(thread, tag))
+        return "\n".join(parts)
+
+    def _compact_bridge_row(self, record) -> str:
+        """One-line bridge job summary for the status list, prompt preview indented."""
+        bits = [record.workspace_alias]
+        if record.returncode is not None:
+            bits.append("exit %s" % record.returncode)
+        bits.append(humanize_time(record.updated_at))
+        line = "[%s] %s · %s" % (record.status, record.run_id, " · ".join(bits))
+        if record.prompt_preview:
+            line += "\n  " + record.prompt_preview
+        return line
 
     def status_one(self, run_id: str) -> str:
         record = self.store.get(run_id)
         if record is not None:
             return summarize_job(record, include_tail=True)
-        # Fall back to Codex's session index: the argument may be a Codex
-        # session_id for a thread the bridge didn't spawn (CLI, IDE, ...).
-        session = find_session(self.config, run_id)
-        if session is not None:
-            return format_codex_thread_status(session)
+        # Try Codex's session index: arg may be a session_id, a thread name,
+        # an id-prefix, or a substring of a name.
+        match, candidates = resolve_session(self.config, run_id)
+        if match is not None:
+            return format_codex_thread_status(match, self.config)
+        if candidates:
+            live = live_session_ids()
+            lines = ["Multiple Codex threads match '%s':" % run_id]
+            for session in candidates:
+                tag = "running" if session["id"] in live else "idle"
+                lines.append("  " + format_thread_row(session, tag))
+            lines.append("Refine with a more specific name or the id.")
+            return "\n".join(lines)
         return "No bridge run or Codex session matches: %s" % run_id
 
     def stop_job(self, run_id: str) -> str:

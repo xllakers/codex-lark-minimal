@@ -36,6 +36,7 @@ class Config:
     max_running: int = 2
     max_prompt_chars: int = 6000
     reply: bool = True
+    session_index_append: bool = True
     home: Path = DEFAULT_HOME
     codex_home: Path = DEFAULT_CODEX_HOME
     config_path: Optional[Path] = None
@@ -96,6 +97,7 @@ def load_config(path: Optional[Path] = None) -> Config:
         max_running=max(1, int(env.get("FEISHU_CODEX_MAX_RUNNING", "2"))),
         max_prompt_chars=max(100, int(env.get("FEISHU_CODEX_MAX_PROMPT_CHARS", "6000"))),
         reply=env_bool(env, "FEISHU_CODEX_REPLY", True),
+        session_index_append=env_bool(env, "FEISHU_CODEX_SESSION_INDEX_APPEND", True),
         home=home,
         codex_home=codex_home,
         config_path=config_path,

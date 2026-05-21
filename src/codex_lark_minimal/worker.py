@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from codex_lark_minimal.codex import (
+    append_session_index_entry,
     build_continue_prompt,
     build_exec_command,
     build_resume_command,
@@ -123,9 +124,19 @@ def _run_codex(child: _ChildProcess, command: List[str], prompt: str, store: Sta
         for line in popen.stdout:
             line = line.rstrip("\n")
             parsed_session = _session_id_from_line(line)
-            if parsed_session:
+            if parsed_session and parsed_session != session_id:
+                # Only on the first-capture transition do we append to Codex's
+                # session_index.jsonl, so resume jobs (which start with the
+                # session_id already known) don't add a duplicate row, and the
+                # repeating "saw the same session id again" updates from the
+                # event stream don't either.
+                is_first_capture = session_id is None
                 session_id = parsed_session
                 store.update(run_id, codex_session_id=session_id)
+                if is_first_capture and existing is not None:
+                    append_session_index_entry(
+                        store.config, session_id, existing.prompt_preview
+                    )
             snippet = event_tail_text(line, max_chars=1200)
             if snippet:
                 tail = _append_tail(tail, snippet)
